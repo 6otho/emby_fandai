@@ -1381,6 +1381,8 @@ function getFlagEmoji(countryCode) {
 async function generateTgReport(env, ctx) {
     let todayCount = 0;
     let universalCount = 0;
+    let topUniversalNode = "无记录";
+    let topUniLocation = "无记录";
     let topLocation = "无记录";
     let topNode = "无记录";
     let recentLogs = [];
@@ -1389,23 +1391,42 @@ async function generateTgReport(env, ctx) {
 
     if (env.DB) {
         try {
+            // 今日总播放
             const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours')").first();
             if (todayRow) todayCount = todayRow.c;
 
+            // 今日通用反代
             const uniRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours') AND prefix LIKE '%通用%'").first();
             if (uniRow) universalCount = uniRow.c;
 
+            // 近7天通用最多访问地区
+            const topUniLocRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix LIKE '%通用%' GROUP BY country ORDER BY c DESC LIMIT 1").first();
+            if (topUniLocRow && topUniLocRow.country) {
+                const flag = getFlagEmoji(topUniLocRow.country);
+                topUniLocation = `${flag} <b>${topUniLocRow.country}</b> (共 <code>${topUniLocRow.c}</code> 次)`;
+            }
+
+            // 今日最热通用反代线路
+            const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours') AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
+            if (topUniRow && topUniRow.prefix) {
+                let cleanHost = topUniRow.prefix.replace('通用: ', '').trim();
+                topUniversalNode = `<b>${cleanHost}</b> (共 <code>${topUniRow.c}</code> 次)`;
+            }
+
+            // 近7天总体最热地区
             const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') GROUP BY country ORDER BY c DESC LIMIT 1").first();
             if (locRow && locRow.country) {
                 const flag = getFlagEmoji(locRow.country);
                 topLocation = `${flag} <b>${locRow.country}</b> (共 <code>${locRow.c}</code> 次)`;
             }
 
+            // 近7天总体最热线路节点
             const nodeRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix NOT LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
             if (nodeRow && nodeRow.prefix) {
                 topNode = `<b>${nodeRow.prefix}</b> (共 <code>${nodeRow.c}</code> 次)`;
             }
 
+            // 最近 5 次播放记录
             const logsReq = await env.DB.prepare("SELECT timestamp, prefix, ip, country, ua FROM visitor_logs ORDER BY timestamp DESC LIMIT 5").all();
             if (logsReq && logsReq.results) recentLogs = logsReq.results;
         } catch (e) {}
@@ -1433,7 +1454,9 @@ async function generateTgReport(env, ctx) {
 
     msg += `📈 <b>【 播放数据 (近24H) 】</b>\n`;
     msg += `├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n`;
-    msg += `└ 🔗 通用反代: <code>${universalCount}</code> 次\n\n`;
+    msg += `├ 🔗 通用反代: <code>${universalCount}</code> 次\n`;
+    msg += `├ 🌍 通用最多访问: ${topUniLocation}\n`;
+    msg += `└ 🔥 最热反代线路: ${topUniversalNode}\n\n`;
 
     msg += `🏆 <b>【 热门统计 (近7天) 】</b>\n`;
     msg += `├ 🌍 最多访问地区: ${topLocation}\n`;
@@ -1570,11 +1593,22 @@ export default {
       } catch (e) {}
     }
 
-    // API：获取通用反代收集数据
+    // API：获取通用反代收集数据 (带上最热访问地区)
     if (url.pathname === "/api/get-universal" && request.method === "GET") {
         if (!env.DB) return Response.json({ success: false, data: [] });
         try {
-            const { results } = await env.DB.prepare("SELECT prefix, MAX(timestamp) as lastActive, COUNT(*) as playCount FROM visitor_logs WHERE prefix LIKE '%通用%' GROUP BY prefix ORDER BY lastActive DESC").all();
+            const query = `
+                SELECT 
+                    prefix, 
+                    MAX(timestamp) as lastActive, 
+                    COUNT(*) as playCount,
+                    (SELECT country FROM visitor_logs v2 WHERE v2.prefix = v1.prefix GROUP BY country ORDER BY COUNT(*) DESC LIMIT 1) as topCountry
+                FROM visitor_logs v1 
+                WHERE prefix LIKE '%通用%' 
+                GROUP BY prefix 
+                ORDER BY lastActive DESC
+            `;
+            const { results } = await env.DB.prepare(query).all();
             return Response.json({ success: true, data: results });
         } catch(e) {
             return Response.json({ success: false, data: [] });
@@ -1714,6 +1748,13 @@ export default {
           el.type = el.type === 'password' ? 'text' : 'password';
       };
 
+      window.getFlagEmoji = function(countryCode) {
+          if (!countryCode || countryCode === 'Unknown' || countryCode === 'XX') return '❓';
+          if (!/^[a-zA-Z]{2}$/.test(countryCode)) return '🏳️‍🌈';
+          const codePoints = countryCode.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0));
+          return String.fromCodePoint(...codePoints);
+      };
+
       // 保存TG设置
       window.saveTgSettings = async function() {
           const token = document.getElementById('tgToken').value.trim();
@@ -1762,6 +1803,11 @@ export default {
               d.data.forEach((item, index) => {
                   let host = item.prefix.replace('通用: ', '').trim();
                   let targetUrl = 'https://' + host; 
+                  
+                  let c = item.topCountry || 'Unknown';
+                  let flag = window.getFlagEmoji(c);
+                  let locStr = c === 'Unknown' ? '未知' : flag + ' ' + c;
+
                   html += \`
                   <div style="min-width: 250px; background: rgba(120,120,120,0.03); border: 1px solid var(--border); border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 10px;">
                       <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="\${host}">\${host}</div>
@@ -1773,6 +1819,10 @@ export default {
                       <div style="display: flex; justify-content: space-between; font-size: 12px;">
                           <span style="color: var(--text-sec);">真实播放:</span>
                           <span style="color: #34c759; font-weight: 600;">\${item.playCount} 次</span>
+                      </div>
+                      <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                          <span style="color: var(--text-sec);">访问地区:</span>
+                          <span style="color: var(--text-sec); font-weight: 500;">\${locStr}</span>
                       </div>
                       <div style="display: flex; justify-content: space-between; font-size: 12px;">
                           <span style="color: var(--text-sec);">最后活跃:</span>
