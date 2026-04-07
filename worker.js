@@ -1358,7 +1358,7 @@ const originalWorker = {
 };
 // ==========================================
 // 下方为新增的无侵入式 面板适配器注入代码
-// 包含：TG UI 注入(带密码眼)、持久化配置、通用反代数据入库、/stats 统一增强报表拦截
+// 包含：TG UI 注入(带密码眼)、通用反代横向收集面板、持久化配置、通用反代数据入库、/stats 统一增强报表拦截
 // ==========================================
 
 // ==========================================
@@ -1367,7 +1367,6 @@ const originalWorker = {
 // ==========================================
 function getFlagEmoji(countryCode) {
     if (!countryCode || countryCode === 'Unknown' || countryCode === 'XX') return '❓';
-    // 检查是否为2个字母
     if (!/^[a-zA-Z]{2}$/.test(countryCode)) return '🏳️‍🌈';
     const codePoints = countryCode
         .toUpperCase()
@@ -1386,42 +1385,32 @@ async function generateTgReport(env, ctx) {
     let topNode = "无记录";
     let recentLogs = [];
 
-    // 获取当前东八区时间作为统计生成时间
     const nowTimestamp = new Date(Date.now() + 8 * 3600000).toISOString().replace("T", " ").split(".")[0];
 
     if (env.DB) {
         try {
-            // 统计今日(近24小时)总播放次数
             const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours')").first();
             if (todayRow) todayCount = todayRow.c;
 
-            // 统计今日“通用反代”的单独播放次数
             const uniRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours') AND prefix LIKE '%通用%'").first();
             if (uniRow) universalCount = uniRow.c;
 
-            // 统计最多访问地区 (近7天)
             const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') GROUP BY country ORDER BY c DESC LIMIT 1").first();
             if (locRow && locRow.country) {
                 const flag = getFlagEmoji(locRow.country);
                 topLocation = `${flag} <b>${locRow.country}</b> (共 <code>${locRow.c}</code> 次)`;
             }
 
-            // 统计最热线路节点 (近7天，排除通用)
             const nodeRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix NOT LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
             if (nodeRow && nodeRow.prefix) {
                 topNode = `<b>${nodeRow.prefix}</b> (共 <code>${nodeRow.c}</code> 次)`;
             }
 
-            // 提取最近 5 次的详细播放记录 (包括通用反代和内置节点)
             const logsReq = await env.DB.prepare("SELECT timestamp, prefix, ip, country, ua FROM visitor_logs ORDER BY timestamp DESC LIMIT 5").all();
             if (logsReq && logsReq.results) recentLogs = logsReq.results;
-
-        } catch (e) {
-            console.error("查询数据库失败:", e);
-        }
+        } catch (e) {}
     }
 
-    // 获取 Cloudflare 流量数据
     let t24 = "未知", t7 = "未知", t30 = "未知";
     try {
         const mockReq = new Request("https://localhost/api/analytics", { 
@@ -1439,7 +1428,6 @@ async function generateTgReport(env, ctx) {
         }
     } catch(e) {}
 
-    // ====== 开始构建层级清晰的通知模板 ======
     let msg = `📊 <b>Emby 播放数据统计报表</b>\n`;
     msg += `<i>🕒 统计时间: ${nowTimestamp}</i>\n\n`;
 
@@ -1456,16 +1444,14 @@ async function generateTgReport(env, ctx) {
     msg += `├ 📅 近  7  天内: <code>${t7}</code>\n`;
     msg += `└ 🗓 近 30 天内: <code>${t30}</code>\n`;
 
-    // 如果有最近播放记录，则追加在报告下方
     if (recentLogs.length > 0) {
         msg += `\n📜 <b>【 最近 ${recentLogs.length} 次播放记录 】</b>`;
         recentLogs.forEach((log) => {
             const c = log.country || 'Unknown';
             const flag = getFlagEmoji(c);
             const logTime = log.timestamp || '刚刚'; 
-            const ua = log.ua || 'Unknown'; // 不再省略内容，完整显示
+            const ua = log.ua || 'Unknown';
 
-            // 采用独立分支线样式排版，保留所有详细字段
             msg += `\n\n▶️ <b>时间</b>: ${logTime}\n`;
             msg += `├ 📌 <b>目标</b>: <code>${log.prefix}</code>\n`;
             msg += `├ 🌍 <b>地区</b>: ${flag} ${c}\n`;
@@ -1532,9 +1518,7 @@ export default {
       }
     });
 
-    // ==========================================
-    // 拦截1：记录“通用反代”观影数据 (默默入库，供/stats提取)
-    // ==========================================
+    // 拦截记录“通用反代”入库
     if (decodedPath.toLowerCase().includes('/playbackinfo')) {
       if (env.DB && ctx && ctx.waitUntil) {
         ctx.waitUntil((async () => {
@@ -1552,21 +1536,15 @@ export default {
                 targetHost = "通用: " + targetUrlObj.host;
               } catch(e) {}
               
-              // 手动生成东八区时间戳，与原代码对齐
               const timestamp = new Date(Date.now() + 8 * 3600000).toISOString().replace("T", " ").split(".")[0];
-
-              await env.DB.prepare(
-                "INSERT INTO visitor_logs (timestamp, prefix, ip, country, ua) VALUES (?, ?, ?, ?, ?)"
-              ).bind(timestamp, targetHost, ip, country, ua).run();
+              await env.DB.prepare("INSERT INTO visitor_logs (timestamp, prefix, ip, country, ua) VALUES (?, ?, ?, ?, ?)").bind(timestamp, targetHost, ip, country, ua).run();
             }
           } catch (err) {}
         })());
       }
     }
 
-    // ==========================================
-    // 拦截2：接收 TG 的 /stats 指令请求，返回带最新记录的报表
-    // ==========================================
+    // 接收 TG 指令
     if (request.method === "POST" && request.headers.get("content-type")?.includes("application/json")) {
       try {
         const clonedReq = request.clone();
@@ -1576,7 +1554,6 @@ export default {
             if (text === "/stats" || text.startsWith("/stats@")) {
                 const chatId = body.message.chat.id;
                 const token = dbTgToken || env.TG_BOT_TOKEN;
-                
                 if (token) {
                     ctx.waitUntil((async () => {
                         const msg = await generateTgReport(env, ctx);
@@ -1593,6 +1570,32 @@ export default {
       } catch (e) {}
     }
 
+    // API：获取通用反代收集数据
+    if (url.pathname === "/api/get-universal" && request.method === "GET") {
+        if (!env.DB) return Response.json({ success: false, data: [] });
+        try {
+            const { results } = await env.DB.prepare("SELECT prefix, MAX(timestamp) as lastActive, COUNT(*) as playCount FROM visitor_logs WHERE prefix LIKE '%通用%' GROUP BY prefix ORDER BY lastActive DESC").all();
+            return Response.json({ success: true, data: results });
+        } catch(e) {
+            return Response.json({ success: false, data: [] });
+        }
+    }
+
+    // API：删除通用反代收集数据
+    if (url.pathname === "/api/del-universal" && request.method === "POST") {
+        if (!env.DB) return Response.json({ success: false });
+        try {
+            const body = await request.json();
+            if (body.prefix) {
+                await env.DB.prepare("DELETE FROM visitor_logs WHERE prefix = ?").bind(body.prefix).run();
+            }
+            return Response.json({ success: true });
+        } catch(e) {
+            return Response.json({ success: false, error: e.message });
+        }
+    }
+
+    // API：读取保存的 TG 配置
     if (url.pathname === "/api/get-tg" && request.method === "GET") {
       return Response.json({ success: true, token: dbTgToken || "", chatId: dbTgChatId || "" });
     }
@@ -1614,18 +1617,14 @@ export default {
         const data = await request.json();
         const token = data.token || dbTgToken || env.TG_BOT_TOKEN;
         const chatId = data.chatId || dbTgChatId || env.TG_CHAT_ID;
-        
         if (!token || !chatId) return Response.json({ success: false, error: "未配置 Token 或 Chat ID" });
-
         const reportMsg = await generateTgReport(env, ctx);
-        const tgUrl = `https://api.telegram.org/bot${token}/sendMessage`;
-        const tgRes = await fetch(tgUrl, {
+        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chat_id: chatId, text: "🚀 <b>面板连通性测试成功！</b>\n\n" + reportMsg, parse_mode: "HTML" })
         });
         const tgData = await tgRes.json();
-        
         if (!tgData.ok) throw new Error(tgData.description);
         return Response.json({ success: true });
       } catch (e) {
@@ -1639,10 +1638,14 @@ export default {
       let html = await response.text();
       
       const injectScript = `
+      <style>
+          .uni-scroll-container::-webkit-scrollbar { height: 6px; }
+          .uni-scroll-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+      </style>
       <script>
       document.addEventListener("DOMContentLoaded", () => {
           const injectHTML = \`
-              <div class="emby-card" data-search="telegram tg bot 设置 通知 播报" style="margin-top: 20px; border: 1px solid var(--primary);">
+              <div class="emby-card" data-search="telegram tg bot 设置 通知 播报" style="margin-top: 20px; border: 1px solid var(--border);">
                   <div class="card-header">
                       <div class="card-title-group">
                           <div style="font-weight: 600; font-size: 16px; color: var(--text);">🤖 Telegram 通知与播报设置</div>
@@ -1667,6 +1670,19 @@ export default {
                       </div>
                   </div>
               </div>
+
+              <!-- 新增的通用反代横向收集面板 -->
+              <div class="emby-card" data-search="通用反代 收集 库 记录" style="margin-top: 20px; border: 1px solid var(--border);">
+                  <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: none; padding-bottom: 0;">
+                      <div class="card-title-group">
+                          <div style="font-weight: 600; font-size: 16px; color: var(--text);">🌍 通用反代地址收集库</div>
+                      </div>
+                      <button class="btn-submit" onclick="pingAllUniversal()" style="background:#32ade6; padding: 6px 12px; font-size: 12px; border-radius: 8px; box-shadow: 0 2px 8px rgba(50,173,230,0.2);">⚡ 全局测速</button>
+                  </div>
+                  <div id="uni-nodes-container" class="uni-scroll-container" style="display: flex; gap: 16px; overflow-x: auto; padding: 15px 0 5px 0; scrollbar-width: thin;">
+                      <div style="color:var(--text-sec); font-size: 13px;">加载收集中...</div>
+                  </div>
+              </div>
           \`;
 
           const targetNode = document.getElementById('addForm') || document.getElementById('list-grid');
@@ -1680,23 +1696,25 @@ export default {
               document.body.appendChild(wrapper);
           }
 
+          // 初始化TG设置
           fetch('/api/get-tg').then(r => r.json()).then(d => {
               if(d.success) {
                   if(d.token) document.getElementById('tgToken').value = d.token;
                   if(d.chatId) document.getElementById('tgChatId').value = d.chatId;
               }
           }).catch(e => console.error(e));
+
+          // 自动加载通用收集库
+          loadUniversalNodes();
       });
 
+      // TG密码眼
       window.toggleTgVis = function(id) {
           const el = document.getElementById(id);
-          if (el.type === 'password') {
-              el.type = 'text';
-          } else {
-              el.type = 'password';
-          }
+          el.type = el.type === 'password' ? 'text' : 'password';
       };
 
+      // 保存TG设置
       window.saveTgSettings = async function() {
           const token = document.getElementById('tgToken').value.trim();
           const chatId = document.getElementById('tgChatId').value.trim();
@@ -1706,39 +1724,138 @@ export default {
                   body: JSON.stringify({ token, chatId })
               });
               const d = await res.json();
-              if(d.success) {
-                  if(typeof showToast === 'function') showToast('✅ TG 通知配置保存成功');
-                  else alert('✅ TG 通知配置保存成功');
-              } else {
-                  if(typeof showToast === 'function') showToast('❌ 保存失败: ' + d.error);
-                  else alert('❌ 保存失败: ' + d.error);
-              }
-          } catch(e) {
-              if(typeof showToast === 'function') showToast('❌ 网络请求失败');
-              else alert('❌ 网络请求失败');
-          }
+              if(d.success) (typeof showToast === 'function' ? showToast : alert)('✅ TG 通知配置保存成功');
+              else (typeof showToast === 'function' ? showToast : alert)('❌ 保存失败: ' + d.error);
+          } catch(e) { (typeof showToast === 'function' ? showToast : alert)('❌ 网络请求失败'); }
       };
 
+      // 测试TG消息
       window.testTgMessage = async function() {
           const token = document.getElementById('tgToken').value.trim();
           const chatId = document.getElementById('tgChatId').value.trim();
-          if(typeof showToast === 'function') showToast('⏳ 正在生成带记录的报表并发送...');
+          if(typeof showToast === 'function') showToast('⏳ 正在生成报表并发送...');
           try {
               const res = await fetch('/api/test-tg', {
                   method: 'POST',
                   body: JSON.stringify({ token, chatId })
               });
               const d = await res.json();
-              if(d.success) {
-                  if(typeof showToast === 'function') showToast('✅ 报表发送成功，请查看 TG！');
-                  else alert('✅ 报表发送成功，请查看 TG！');
-              } else {
-                  if(typeof showToast === 'function') showToast('❌ 发送失败: ' + d.error);
-                  else alert('❌ 发送失败: ' + d.error);
+              if(d.success) (typeof showToast === 'function' ? showToast : alert)('✅ 报表发送成功，请查看 TG！');
+              else (typeof showToast === 'function' ? showToast : alert)('❌ 发送失败: ' + d.error);
+          } catch(e) { (typeof showToast === 'function' ? showToast : alert)('❌ 网络异常'); }
+      };
+
+      // ===========================
+      // 新增：通用反代模块 JS 逻辑
+      // ===========================
+      window.loadUniversalNodes = async function() {
+          try {
+              const res = await fetch('/api/get-universal');
+              const d = await res.json();
+              const container = document.getElementById('uni-nodes-container');
+              if(!d.success || !d.data || d.data.length === 0) {
+                  container.innerHTML = '<div style="color:var(--text-sec); font-size: 13px;">暂时没有探测到任何人使用通用反代播放。</div>';
+                  return;
               }
+              
+              let html = '';
+              d.data.forEach((item, index) => {
+                  let host = item.prefix.replace('通用: ', '').trim();
+                  let targetUrl = 'https://' + host; 
+                  html += \`
+                  <div style="min-width: 250px; background: rgba(120,120,120,0.03); border: 1px solid var(--border); border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 10px;">
+                      <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="\${host}">\${host}</div>
+                      
+                      <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center;">
+                          <span style="color: var(--text-sec);">节点延迟:</span>
+                          <span id="uni-ping-\${index}" data-target="\${targetUrl}" onclick="pingUniversal(\${index}, '\${targetUrl}')" style="cursor:pointer; color: var(--text-sec); background: var(--card); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); font-weight: 500;" title="点击重新测速">测速中...</span>
+                      </div>
+                      <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                          <span style="color: var(--text-sec);">真实播放:</span>
+                          <span style="color: #34c759; font-weight: 600;">\${item.playCount} 次</span>
+                      </div>
+                      <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                          <span style="color: var(--text-sec);">最后活跃:</span>
+                          <span style="color: var(--text-sec);">\${item.lastActive}</span>
+                      </div>
+
+                      <div style="display: flex; gap: 8px; margin-top: auto; border-top: 1px dashed var(--border); padding-top: 12px;">
+                          <button onclick="editUniversal('\${host}')" class="btn-edit" style="flex: 1; padding: 6px; font-size: 12px;">✏️ 提档转正</button>
+                          <button onclick="delUniversal('\${item.prefix}')" class="btn-del" style="flex: 1; padding: 6px; font-size: 12px;">🗑️ 删除</button>
+                      </div>
+                  </div>\`;
+              });
+              container.innerHTML = html;
+              
+              // 渲染完毕后开始排队测速
+              d.data.forEach((item, index) => {
+                  let host = item.prefix.replace('通用: ', '').trim();
+                  setTimeout(() => pingUniversal(index, 'https://' + host), 500 * index);
+              });
+          } catch(e) {}
+      };
+
+      // 单个测速
+      window.pingUniversal = async function(idx, target) {
+          const badge = document.getElementById('uni-ping-' + idx);
+          if(!badge) return;
+          badge.textContent = '测速中...';
+          badge.style.color = 'var(--text-sec)';
+          const start = performance.now();
+          try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 2000);
+              await fetch(target + '/web/index.html', { mode: 'no-cors', signal: controller.signal });
+              clearTimeout(timeoutId);
+              const ms = Math.round(performance.now() - start);
+              badge.textContent = ms + ' ms';
+              badge.style.color = ms < 300 ? '#34c759' : (ms < 800 ? 'var(--primary)' : '#ff9500');
           } catch(e) {
-              if(typeof showToast === 'function') showToast('❌ 网络发送异常');
-              else alert('❌ 网络发送异常');
+              badge.textContent = '超时抛弃';
+              badge.style.color = '#ff3b30';
+          }
+      };
+
+      // 全局测速
+      window.pingAllUniversal = function() {
+          const badges = document.querySelectorAll('[id^="uni-ping-"]');
+          if(badges.length === 0) return;
+          if(typeof showToast === 'function') showToast('⚡ 开始对通用收集库进行全局测速...');
+          badges.forEach((badge, idx) => {
+              const target = badge.getAttribute('data-target');
+              const realIdx = badge.id.replace('uni-ping-', '');
+              if(target) {
+                  setTimeout(() => pingUniversal(realIdx, target), 300 * idx);
+              }
+          });
+      };
+
+      window.delUniversal = async function(prefix) {
+          if(!confirm('确定删除该通用域名的收集记录吗？\\n(注意：这只会清除展示记录，不会影响原服务)')) return;
+          try {
+              await fetch('/api/del-universal', { method: 'POST', body: JSON.stringify({ prefix }) });
+              if(typeof showToast === 'function') showToast('🗑️ 记录已清除');
+              loadUniversalNodes();
+          } catch(e) {
+              if(typeof showToast === 'function') showToast('❌ 删除失败');
+          }
+      };
+
+      window.editUniversal = function(host) {
+          // 提取该节点信息填入部署表单
+          const prefixInput = document.getElementById('prefix');
+          const targetInputs = document.querySelectorAll('.target-input');
+          const remarkInput = document.getElementById('remark');
+          
+          if(prefixInput) prefixInput.value = host.split('.')[0] || 'ty-node';
+          if(remarkInput) remarkInput.value = host; // 改为直接填入纯域名
+          if(targetInputs.length > 0) targetInputs[0].value = 'https://' + host;
+          
+          // 滚动到顶部表单
+          const form = document.getElementById('addForm');
+          if(form) {
+              window.scrollTo({ top: form.offsetTop - 100, behavior: 'smooth' });
+              if(typeof showToast === 'function') showToast('✅ 已提取到表单，请修改短路径后保存即可转正！');
           }
       };
       </script>
