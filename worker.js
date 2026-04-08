@@ -1357,7 +1357,7 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极极简版：干净清爽的 ◻️ 符号脱敏 + 彻底抛弃花里胡哨的特效
+// 终极复原版：分布式防重复推送 + 纯净TG简写 + 面板原名复原 + 双端独立适配
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1367,40 +1367,36 @@ function getFlagEmoji(countryCode) {
     return String.fromCodePoint(...codePoints);
 }
 
-// 三大云厂商(AWS, GCP, Azure) + 简称 全景正则解析
+// 地区全景解析：同时输出全称和简写。彻底锁死 ap-east 为香港！
 function parseCloudRegion(host) {
-    if (!host) return { icon: '🌐', name: '自定义节点' };
+    if (!host) return { icon: '🌐', name: '未知', short: '未知' };
     const h = String(host).toLowerCase();
 
-    if (h.includes('ap-southeast-1') || h.includes('asia-southeast1') || h.includes('southeastasia') || h.includes('sg') || h.includes('sin')) return { icon: '🇸🇬', name: '新加坡节点' };
-    if (h.includes('ap-east-1') || h.includes('asia-east2') || h.includes('eastasia') || h.includes('hk') || h.includes('hkg')) return { icon: '🇭🇰', name: '香港节点' };
-    if (h.includes('asia-east1') || h.includes('tw') || h.includes('tpe') || h.includes('taiwan')) return { icon: '🇹🇼', name: '台湾节点' };
-    if (h.includes('ap-northeast-1') || h.includes('ap-northeast-3') || h.includes('asia-northeast1') || h.includes('asia-northeast2') || h.includes('japaneast') || h.includes('japanwest') || h.includes('jp') || h.includes('tyo') || h.includes('nrt')) return { icon: '🇯🇵', name: '日本节点' };
-    if (h.includes('ap-northeast-2') || h.includes('asia-northeast3') || h.includes('koreacentral') || h.includes('koreasouth') || h.includes('kr') || h.includes('icn')) return { icon: '🇰🇷', name: '韩国节点' };
-    if (h.includes('ap-southeast-2') || h.includes('australiaeast') || h.includes('australiasoutheast') || h.includes('au') || h.includes('syd')) return { icon: '🇦🇺', name: '澳洲节点' };
-    if (h.includes('eu-west-2') || h.includes('europe-west2') || h.includes('uksouth') || h.includes('ukwest') || h.includes('uk') || h.includes('lhr') || h.includes('london')) return { icon: '🇬🇧', name: '英国节点' };
-    if (h.includes('eu-central-1') || h.includes('europe-west3') || h.includes('germanywestcentral') || h.includes('de') || h.includes('fra') || h.includes('germany')) return { icon: '🇩🇪', name: '德国节点' };
-    if (h.includes('us-east') || h.includes('us-west') || h.includes('us-central') || h.includes('eastus') || h.includes('westus') || h.includes('centralus') || h.includes('us') || h.includes('america')) return { icon: '🇺🇸', name: '美国节点' };
+    if (h.includes('ap-east') || h.includes('hk') || h.includes('hongkong')) return { icon: '🇭🇰', name: '香港节点', short: 'HK' };
+    if (h.includes('tw') || h.includes('taiwan') || h.includes('asia-east1')) return { icon: '🇹🇼', name: '台湾节点', short: 'TW' };
+    if (h.includes('sg') || h.includes('sin') || h.includes('singapore') || h.includes('southeast-1')) return { icon: '🇸🇬', name: '新加坡节点', short: 'SG' };
+    if (h.includes('jp') || h.includes('japan') || h.includes('tyo') || h.includes('northeast-1') || h.includes('northeast-3')) return { icon: '🇯🇵', name: '日本节点', short: 'JP' };
+    if (h.includes('kr') || h.includes('korea') || h.includes('icn') || h.includes('northeast-2')) return { icon: '🇰🇷', name: '韩国节点', short: 'KR' };
+    if (h.includes('au') || h.includes('syd') || h.includes('australia') || h.includes('southeast-2') || h.includes('southeast-4')) return { icon: '🇦🇺', name: '澳洲节点', short: 'AU' };
+    if (h.includes('uk') || h.includes('london') || h.includes('west-2')) return { icon: '🇬🇧', name: '英国节点', short: 'UK' };
+    if (h.includes('de') || h.includes('fra') || h.includes('germany') || h.includes('eu-central')) return { icon: '🇩🇪', name: '德国节点', short: 'DE' };
+    if (h.includes('us') || h.includes('america') || h.includes('eastus') || h.includes('westus')) return { icon: '🇺🇸', name: '美国节点', short: 'US' };
 
-    return { icon: '🌐', name: '自定义节点' };
+    return { icon: '🌐', name: '未知', short: '未知' };
 }
 
-// 域名极简脱敏：使用 ◻️◻️◻️
 function maskDomain(host) {
     if (!host || !host.includes('.')) return host;
     const parts = host.split('.');
     const firstPart = parts[0];
     const lastPart = parts[parts.length - 1];
     if (parts.length > 2) {
-        if (parts[1].toLowerCase() === 'emby') {
-            return `${firstPart}.emby.◻️◻️◻️.${lastPart}`;
-        }
+        if (parts[1].toLowerCase() === 'emby') return `${firstPart}.emby.◻️◻️◻️.${lastPart}`;
         return `${firstPart}.◻️◻️◻️.${lastPart}`;
     }
     return `${firstPart.substring(0, 3)}◻️◻️◻️.${lastPart}`;
 }
 
-// IP 极简脱敏：使用 ◻️◻️◻️
 function maskIp(ip) {
     if (!ip || ip === 'Unknown') return 'Unknown';
     const parts = ip.split('.');
@@ -1412,24 +1408,28 @@ function maskIp(ip) {
     return `◻️◻️◻️`;
 }
 
-// 核心显示逻辑：干干净净，没有特效
 function formatDisplay(rawStr, isMaskEnabled, isIp = false) {
-    if (!isMaskEnabled) return `<code>${rawStr}</code>`; // 关掉脱敏，直接显示明文
+    if (!isMaskEnabled) return `<code>${rawStr}</code>`; 
     const masked = isIp ? maskIp(rawStr) : maskDomain(rawStr);
-    return `<code>${masked}</code>`; // 开启脱敏，直接显示 ◻️
+    return `<code>${masked}</code>`; 
 }
 
 async function generateTgReport(env, ctx) {
     let todayCount = 0, universalCount = 0, topUniversalNode = "无记录", topUniLocation = "无记录", topLocation = "无记录", topNode = "无记录", recentLogs = [];
     let regionMap = {};
-    let isMaskEnabled = true; // 默认开启脱敏
+    let dbRegions = {}; 
+    let isMaskEnabled = true; 
     const nowTimestamp = new Date(Date.now() + 8 * 3600000).toISOString().replace("T", " ").split(".")[0];
     
     if (env.DB) {
         try {
-            // 获取脱敏开关设置
             const maskRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_MASK_ENABLED'").first();
             if (maskRow && maskRow.value === 'false') isMaskEnabled = false;
+
+            const cnReq = await env.DB.prepare("SELECT host, region FROM cluster_nodes_v5").all();
+            if (cnReq && cnReq.results) {
+                cnReq.results.forEach(r => dbRegions[r.host] = r.region);
+            }
 
             const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours')").first();
             if (todayRow) todayCount = todayRow.c;
@@ -1438,11 +1438,32 @@ async function generateTgReport(env, ctx) {
             const topUniLocRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix LIKE '%通用%' GROUP BY country ORDER BY c DESC LIMIT 1").first();
             if (topUniLocRow && topUniLocRow.country) topUniLocation = `${getFlagEmoji(topUniLocRow.country)} <b>${topUniLocRow.country}</b> (共 <code>${topUniLocRow.c}</code> 次)`;
             
+            function getTgNodeDisplay(host) {
+                let rInfo = parseCloudRegion(host);
+                if (rInfo.name !== '未知') return `${rInfo.icon} ${rInfo.short} `;
+                let dbReg = dbRegions[host];
+                if (dbReg) {
+                    if (dbReg.includes('香港')) return '🇭🇰 HK ';
+                    if (dbReg.includes('新加坡')) return '🇸🇬 SG ';
+                    if (dbReg.includes('台湾')) return '🇹🇼 TW ';
+                    if (dbReg.includes('日本')) return '🇯🇵 JP ';
+                    if (dbReg.includes('韩国')) return '🇰🇷 KR ';
+                    if (dbReg.includes('澳洲')) return '🇦🇺 AU ';
+                    if (dbReg.includes('英国')) return '🇬🇧 UK ';
+                    if (dbReg.includes('德国')) return '🇩🇪 DE ';
+                    if (dbReg.includes('美国')) return '🇺🇸 US ';
+                    if (dbReg.includes('加拿大')) return '🇨🇦 CA ';
+                    const match = dbReg.match(/^([\uD800-\uDBFF][\uDC00-\uDFFF])/);
+                    if (match) return match[1] + ' ';
+                }
+                return `🌐 `;
+            }
+
             const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours') AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
             if (topUniRow && topUniRow.prefix) {
                 let cleanHost = topUniRow.prefix.replace('通用:', '').replace('通用: ', '').trim();
-                let rInfo = parseCloudRegion(cleanHost);
-                topUniversalNode = `${rInfo.icon} ${formatDisplay(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
+                let tgRegionStr = getTgNodeDisplay(cleanHost);
+                topUniversalNode = `${tgRegionStr}${formatDisplay(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
             }
 
             const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') GROUP BY country ORDER BY c DESC LIMIT 1").first();
@@ -1450,8 +1471,8 @@ async function generateTgReport(env, ctx) {
             
             const nodeRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix NOT LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
             if (nodeRow && nodeRow.prefix) {
-                let rInfo = parseCloudRegion(nodeRow.prefix);
-                topNode = `${rInfo.icon} ${formatDisplay(nodeRow.prefix, isMaskEnabled)} (共 <code>${nodeRow.c}</code> 次)`;
+                let tgRegionStr = getTgNodeDisplay(nodeRow.prefix);
+                topNode = `${tgRegionStr}${formatDisplay(nodeRow.prefix, isMaskEnabled)} (共 <code>${nodeRow.c}</code> 次)`;
             }
 
             const rReq = await env.DB.prepare("SELECT host, target, COUNT(*) as c FROM region_hits_v2 WHERE datetime(timestamp) >= datetime('now', '-24 hours') GROUP BY host, target ORDER BY host, c DESC").all();
@@ -1477,8 +1498,29 @@ async function generateTgReport(env, ctx) {
         }
     } catch(e) {}
 
-    let msg = `📊 <b>Emby 播放数据统计报表</b>\n<i>🕒 统计时间: ${nowTimestamp}</i>\n\n`;
-    msg += `📈 <b>【 播放数据 (近24H) 】</b>\n├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n├ 🔗 通用反代: <code>${universalCount}</code> 次\n├ 🌍 通用最多访问: ${topUniLocation}\n└ 🔥 最热反代目标: ${topUniversalNode}\n\n`;
+    function safeGetTgNodeDisplay(host) {
+        let rInfo = parseCloudRegion(host);
+        if (rInfo.name !== '未知') return `${rInfo.icon} ${rInfo.short} `;
+        let dbReg = dbRegions[host];
+        if (dbReg) {
+            if (dbReg.includes('香港')) return '🇭🇰 HK ';
+            if (dbReg.includes('新加坡')) return '🇸🇬 SG ';
+            if (dbReg.includes('台湾')) return '🇹🇼 TW ';
+            if (dbReg.includes('日本')) return '🇯🇵 JP ';
+            if (dbReg.includes('韩国')) return '🇰🇷 KR ';
+            if (dbReg.includes('澳洲')) return '🇦🇺 AU ';
+            if (dbReg.includes('英国')) return '🇬🇧 UK ';
+            if (dbReg.includes('德国')) return '🇩🇪 DE ';
+            if (dbReg.includes('美国')) return '🇺🇸 US ';
+            if (dbReg.includes('加拿大')) return '🇨🇦 CA ';
+            const match = dbReg.match(/^([\uD800-\uDBFF][\uDC00-\uDFFF])/);
+            if (match) return match[1] + ' ';
+        }
+        return `🌐 `;
+    }
+
+    let msg = `📊 <b>Emby 全局播放数据统计报表</b>\n<i>🕒 统计时间: ${nowTimestamp}</i>\n\n`;
+    msg += `📈 <b>【 播放数据 (近24H) 】</b>\n├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n├ 🔗 通用反代: <code>${universalCount}</code> 次\n├ 🌍 访客来源最多: ${topUniLocation}\n└ 🔥 最热反代目标: ${topUniversalNode}\n\n`;
     
     msg += `📍 <b>【 地区节点负载 (近24H) 】</b>\n`;
     const hosts = Object.keys(regionMap);
@@ -1489,9 +1531,9 @@ async function generateTgReport(env, ctx) {
             const childLine = isLastHost ? "    " : "│   ";
             
             const rData = regionMap[host];
-            let rInfo = parseCloudRegion(host); 
+            let tgRegionStr = safeGetTgNodeDisplay(host); 
             
-            msg += `${hostPrefix} 📡 ${rInfo.icon} ${rInfo.name} (${formatDisplay(host, isMaskEnabled)}) : <code>${rData.total}</code> 次\n`; 
+            msg += `${hostPrefix} 📡 ${tgRegionStr}${formatDisplay(host, isMaskEnabled)} : <code>${rData.total}</code> 次\n`; 
             
             rData.targets.forEach((t, tidx) => {
                 let isLastTarget = (tidx === rData.targets.length - 1);
@@ -1507,7 +1549,7 @@ async function generateTgReport(env, ctx) {
         msg += `└ 📡 暂无数据\n`; 
     }
     
-    msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 最多访问地区: ${topLocation}\n└ 🚀 最热线路节点: ${topNode}\n\n`;
+    msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 访客来源最多: ${topLocation}\n└ 🚀 最热线路节点: ${topNode}\n\n`;
     msg += `🌐 <b>【 主域名流量消耗 】</b>\n├ ⏳ 近 24 小时内: <code>${t24}</code>\n├ 📅 近  7  天内: <code>${t7}</code>\n└ 🗓 近 30 天内: <code>${t30}</code>\n`;
     
     if (recentLogs.length > 0) {
@@ -1516,10 +1558,10 @@ async function generateTgReport(env, ctx) {
             let rawPrefix = log.prefix || 'Unknown';
             let isUni = rawPrefix.includes('通用:');
             let cleanHost = rawPrefix.replace('通用:', '').replace('通用: ', '').trim();
-            let regionInfo = parseCloudRegion(cleanHost);
-            let targetType = isUni ? '🔗 通用反代至' : '🎯 目标节点';
+            let targetType = isUni ? '🔗 反代至' : '🎯 目标';
+            let tgRegionStr = safeGetTgNodeDisplay(cleanHost);
 
-            msg += `\n\n▶️ <b>时间</b>: ${log.timestamp || '刚刚'}\n├ 📌 <b>${targetType}</b>: ${formatDisplay(cleanHost, isMaskEnabled)} (${regionInfo.icon} ${regionInfo.name})\n├ 🌍 <b>访客地区</b>: ${getFlagEmoji(log.country)} ${log.country}\n├ 🌐 <b>访客IP</b>: ${formatDisplay(log.ip, isMaskEnabled, true)}\n└ 📱 <b>设备</b>: <code>${log.ua || 'Unknown'}</code>`; 
+            msg += `\n\n▶️ <b>时间</b>: ${log.timestamp || '刚刚'}\n├ 📌 <b>${targetType}</b>: ${tgRegionStr}${formatDisplay(cleanHost, isMaskEnabled)}\n├ 🌍 <b>访客地区</b>: ${getFlagEmoji(log.country)} ${log.country}\n├ 🌐 <b>访客 IP</b>: ${formatDisplay(log.ip, isMaskEnabled, true)}\n└ 📱 <b>设备</b>: <code>${log.ua || 'Unknown'}</code>`; 
         });
     }
     return msg;
@@ -1530,6 +1572,18 @@ export default {
     let dbTgToken = null, dbTgChatId = null;
     if (env.DB) {
       try {
+        await env.DB.prepare("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)").run().catch(() => {});
+        
+        // 【核心功能】：多Worker并发阻挡器 (防重复发报表)
+        const nowMs = Date.now();
+        const lastRunRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'LAST_CRON_TIME'").first();
+        // 如果 5 分钟内已经有其它 Worker 发送过了，当前 Worker 直接静默退出
+        if (lastRunRow && (nowMs - parseInt(lastRunRow.value)) < 5 * 60 * 1000) {
+            return; 
+        }
+        // 抢占锁，将当前时间写入数据库
+        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('LAST_CRON_TIME', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(nowMs.toString()).run();
+
         const tokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_BOT_TOKEN'").first();
         const chatRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_CHAT_ID'").first();
         if (tokenRow) dbTgToken = tokenRow.value;
@@ -1657,7 +1711,6 @@ export default {
         const data = await request.json();
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_BOT_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.token || "").run();
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_CHAT_ID', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.chatId || "").run();
-        // 保存脱敏开关状态
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_MASK_ENABLED', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.maskEnabled ? 'true' : 'false').run();
         return Response.json({ success: true });
       } catch (e) { return Response.json({ success: false, error: e.message }); }
@@ -1685,25 +1738,31 @@ export default {
       if (env.DB && ctx && ctx.waitUntil && !currentHost.includes('.workers.dev')) {
           ctx.waitUntil((async () => {
               let physicalRegion = "🌍 全球边缘节点";
-              try {
-                  const traceRes = await fetch('https://cloudflare.com/cdn-cgi/trace');
-                  const traceText = await traceRes.text();
-                  const locMatch = traceText.match(/loc=([A-Z]{2})/);
-                  if (locMatch && locMatch[1]) {
-                      const locCode = locMatch[1];
-                      if (locCode === 'SG') physicalRegion = '🇸🇬 新加坡节点';
-                      else if (locCode === 'US') physicalRegion = '🇺🇸 美国节点';
-                      else if (locCode === 'HK') physicalRegion = '🇭🇰 香港节点';
-                      else if (locCode === 'TW') physicalRegion = '🇹🇼 台湾节点';
-                      else if (locCode === 'JP') physicalRegion = '🇯🇵 日本节点';
-                      else if (locCode === 'KR') physicalRegion = '🇰🇷 韩国节点';
-                      else if (locCode === 'GB') physicalRegion = '🇬🇧 英国节点';
-                      else if (locCode === 'DE') physicalRegion = '🇩🇪 德国节点';
-                      else if (locCode === 'CA') physicalRegion = '🇨🇦 加拿大节点';
-                      else if (locCode === 'AU') physicalRegion = '🇦🇺 澳洲节点';
-                      else physicalRegion = `${getFlagEmoji(locCode)} ${locCode}节点`;
-                  }
-              } catch(e) {}
+              let parsedRegion = parseCloudRegion(currentHost);
+              
+              if (parsedRegion.name !== '未知') {
+                  physicalRegion = parsedRegion.icon + ' ' + parsedRegion.name;
+              } else {
+                  try {
+                      const traceRes = await fetch('https://cloudflare.com/cdn-cgi/trace');
+                      const traceText = await traceRes.text();
+                      const locMatch = traceText.match(/loc=([A-Z]{2})/);
+                      if (locMatch && locMatch[1]) {
+                          const locCode = locMatch[1];
+                          if (locCode === 'SG') physicalRegion = '🇸🇬 新加坡节点';
+                          else if (locCode === 'US') physicalRegion = '🇺🇸 美国节点';
+                          else if (locCode === 'HK') physicalRegion = '🇭🇰 香港节点';
+                          else if (locCode === 'TW') physicalRegion = '🇹🇼 台湾节点';
+                          else if (locCode === 'JP') physicalRegion = '🇯🇵 日本节点';
+                          else if (locCode === 'KR') physicalRegion = '🇰🇷 韩国节点';
+                          else if (locCode === 'GB') physicalRegion = '🇬🇧 英国节点';
+                          else if (locCode === 'DE') physicalRegion = '🇩🇪 德国节点';
+                          else if (locCode === 'CA') physicalRegion = '🇨🇦 加拿大节点';
+                          else if (locCode === 'AU') physicalRegion = '🇦🇺 澳洲节点';
+                          else physicalRegion = `${getFlagEmoji(locCode)} ${locCode}节点`;
+                      }
+                  } catch(e) {}
+              }
               await env.DB.prepare("INSERT INTO cluster_nodes_v5 (host, url, region, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(host) DO UPDATE SET url=excluded.url, region=excluded.region, updated_at=CURRENT_TIMESTAMP").bind(currentHost, url.origin, physicalRegion).run().catch(()=>{});
           })());
       }
@@ -1716,11 +1775,51 @@ export default {
       if (html.includes('</body>')) {
           const injectScript = `
           <style>
-              .uni-scroll-container::-webkit-scrollbar { height: 6px; }
-              .uni-scroll-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-              .cluster-btn { padding: 12px; border-radius: 10px; background: var(--card); border: 1px solid var(--border); min-width: 250px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+              /* 电脑端默认保留你想要的250px固定宽度！ */
+              .cluster-btn { 
+                  width: 250px; 
+                  padding: 12px; 
+                  border-radius: 10px; 
+                  background: var(--card); 
+                  border: 1px solid var(--border); 
+                  display: flex; 
+                  flex-direction: column; 
+                  gap: 8px; 
+                  box-shadow: 0 2px 6px rgba(0,0,0,0.05); 
+                  box-sizing: border-box;
+              }
               .cluster-btn.active { border: 1px solid var(--primary); box-shadow: 0 4px 12px rgba(0,113,227,0.15); }
               
+              /* 媒体查询：只有在手机端（屏幕宽度小于600像素时），才强制伸缩到100%铺满屏幕，防止留白！ */
+              @media (max-width: 600px) {
+                  .cluster-btn { width: 100% !important; }
+              }
+              
+              /* 完美保留的横向滑动拖拽，绝对不折行堆叠 */
+              .uni-scroll-container {
+                  display: flex;
+                  flex-wrap: nowrap; 
+                  gap: 16px;
+                  overflow-x: auto; 
+                  padding: 15px 0 5px 0;
+                  scrollbar-width: thin;
+              }
+              .uni-scroll-container::-webkit-scrollbar { height: 6px; }
+              .uni-scroll-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+              .uni-card {
+                  flex: 0 0 auto; 
+                  width: 260px;
+                  box-sizing: border-box;
+                  background: rgba(120,120,120,0.03); 
+                  border: 1px solid var(--border); 
+                  border-radius: 12px; 
+                  padding: 15px; 
+                  display: flex; 
+                  flex-direction: column; 
+                  gap: 10px;
+              }
+
               .region-title { font-size: 15px; font-weight: bold; margin-bottom: 2px; text-align: center; cursor: pointer; transition: color 0.2s; }
               .region-title:hover { color: var(--primary); text-decoration: underline; }
 
@@ -1730,13 +1829,27 @@ export default {
               .tg-eye-icon { stroke: var(--text); opacity: 0.5; transition: opacity 0.2s; }
               .tg-eye-icon:hover { opacity: 1; }
               
-              /* 切换开关样式 */
               .toggle-switch { appearance: none; width: 36px; height: 20px; background: var(--border); border-radius: 10px; position: relative; cursor: pointer; outline: none; transition: background 0.3s; margin-right: 8px; }
               .toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: white; border-radius: 50%; transition: transform 0.3s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
               .toggle-switch:checked { background: #34c759; }
               .toggle-switch:checked::after { transform: translateX(16px); }
           </style>
           <script>
+          window.parseCloudRegion = function(host) {
+              if (!host) return { icon: '🌐', name: '未知' };
+              const h = String(host).toLowerCase();
+              if (h.includes('ap-east') || h.includes('hk') || h.includes('hongkong')) return { icon: '🇭🇰', name: '香港节点' };
+              if (h.includes('tw') || h.includes('taiwan') || h.includes('asia-east1')) return { icon: '🇹🇼', name: '台湾节点' };
+              if (h.includes('sg') || h.includes('sin') || h.includes('singapore') || h.includes('southeast-1')) return { icon: '🇸🇬', name: '新加坡节点' };
+              if (h.includes('jp') || h.includes('japan') || h.includes('tyo') || h.includes('northeast-1') || h.includes('northeast-3')) return { icon: '🇯🇵', name: '日本节点' };
+              if (h.includes('kr') || h.includes('korea') || h.includes('icn') || h.includes('northeast-2')) return { icon: '🇰🇷', name: '韩国节点' };
+              if (h.includes('au') || h.includes('syd') || h.includes('australia') || h.includes('southeast-2') || h.includes('southeast-4')) return { icon: '🇦🇺', name: '澳洲节点' };
+              if (h.includes('uk') || h.includes('london') || h.includes('west-2')) return { icon: '🇬🇧', name: '英国节点' };
+              if (h.includes('de') || h.includes('fra') || h.includes('germany') || h.includes('eu-central')) return { icon: '🇩🇪', name: '德国节点' };
+              if (h.includes('us') || h.includes('america') || h.includes('eastus') || h.includes('westus')) return { icon: '🇺🇸', name: '美国节点' };
+              return { icon: '🌐', name: '未知' };
+          };
+
           document.addEventListener("DOMContentLoaded", () => {
               const injectHTML = \`
                   <div id="my-custom-panel-wrapper">
@@ -1747,8 +1860,9 @@ export default {
                                   <div style="font-weight: 600; font-size: 16px; color: var(--text);">🌐 地区节点自动发现与管理</div>
                               </div>
                           </div>
+                          <!-- 节点存放区 -->
                           <div id="cluster-switcher-container" style="display:flex; gap:16px; flex-wrap:wrap; padding: 15px 0 5px 0;">
-                              <div style="color:var(--text-sec); font-size: 13px;">正在探测地区节点...</div>
+                              <div style="color:var(--text-sec); font-size: 13px; margin-left: 5px;">正在探测地区节点...</div>
                           </div>
                           <div style="font-size: 12px; color: var(--text-sec); line-height: 1.5; margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px;">
                               * 提示：系统已锁定所有物理机房位置。<b>点击上方国家名称可无缝切换节点面板，点击蓝色网址框可一键强制复制。</b>
@@ -1772,7 +1886,6 @@ export default {
                                   </span>
                               </div>
                               
-                              <!-- 极简脱敏开关 -->
                               <div style="display:flex; align-items:center; color:var(--text); font-size:14px; margin-top:4px;">
                                   <input type="checkbox" id="tgMaskToggle" class="toggle-switch" checked>
                                   <label for="tgMaskToggle" style="cursor:pointer; user-select:none;">开启数据脱敏 (使用 ◻️ 隐藏真实 IP/域名，关闭则显示明文)</label>
@@ -1791,8 +1904,9 @@ export default {
                               <div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🌍 通用反代地址收集库</div></div>
                               <button class="btn-submit" onclick="pingAllUniversal()" style="background:#32ade6; padding: 6px 12px; font-size: 12px; border-radius: 8px;">⚡ 全局测速</button>
                           </div>
-                          <div id="uni-nodes-container" class="uni-scroll-container" style="display: flex; gap: 16px; overflow-x: auto; padding: 15px 0 5px 0; scrollbar-width: thin;">
-                              <div style="color:var(--text-sec); font-size: 13px;">加载中...</div>
+                          <!-- 完美保留的横向滑动容器 -->
+                          <div id="uni-nodes-container" class="uni-scroll-container">
+                              <div style="color:var(--text-sec); font-size: 13px; margin-left: 5px;">加载中...</div>
                           </div>
                       </div>
                   </div>
@@ -1848,7 +1962,7 @@ export default {
                   const validData = d.data ? d.data.filter(item => !item.host.includes('.workers.dev')) : [];
                   
                   if(!d.success || validData.length === 0) {
-                      container.innerHTML = '<div style="color:var(--text-sec); font-size: 13px;">暂未发现地区节点。请确保您已正常访问过该节点的主页面。</div>';
+                      container.innerHTML = '<div style="color:var(--text-sec); font-size: 13px; margin-left:5px;">暂未发现地区节点。请确保您已正常访问过该节点的主页面。</div>';
                       return;
                   }
                   
@@ -1860,13 +1974,15 @@ export default {
                       const fullUrl = "https://" + item.host;
                       const targetPath = item.url + window.location.pathname + window.location.search;
                       
+                      let parsedRegion = window.parseCloudRegion(item.host);
+                      let finalRegionName = parsedRegion.name !== '未知' ? (parsedRegion.icon + ' ' + parsedRegion.name) : item.region;
+                      
                       html += \`
                       <div class="cluster-btn \${isCurrent ? 'active' : ''}">
-                          
                           <div class="region-title" 
                                \${!isCurrent ? 'onclick="window.location.href=\\'' + targetPath + '\\'"' : ''} 
                                title="\${!isCurrent ? '点击无缝切换到该节点面板' : '您当前正在此节点'}">
-                              \${item.region} \${isCurrent ? '<span style="font-size:12px; color:var(--primary); font-weight:normal; margin-left:4px;">(当前所在)</span>' : ''}
+                              \${finalRegionName} \${isCurrent ? '<span style="font-size:12px; color:var(--primary); font-weight:normal; margin-left:4px;">(当前所在)</span>' : ''}
                           </div>
                           
                           <div class="copy-box" onclick="forceCopyUrl('\${fullUrl}')" title="点击一键复制完整的节点地址">
@@ -1940,7 +2056,7 @@ export default {
                   const d = await res.json();
                   const container = document.getElementById('uni-nodes-container');
                   if(!d.success || !d.data || d.data.length === 0) {
-                      container.innerHTML = '<div style="color:var(--text-sec); font-size: 13px;">暂无外部访问记录。</div>';
+                      container.innerHTML = '<div style="color:var(--text-sec); font-size: 13px; margin-left:5px;">暂无外部访问记录。</div>';
                       return;
                   }
                   
@@ -1949,10 +2065,13 @@ export default {
                       let host = item.prefix.replace('通用: ', '').trim();
                       let targetUrl = 'https://' + host; 
                       let locStr = item.topCountry === 'Unknown' ? '未知' : window.getFlagEmoji(item.topCountry) + ' ' + item.topCountry;
+                      
+                      let parsed = window.parseCloudRegion(host);
+                      let displayHost = parsed.name !== '未知' ? \`[\${parsed.icon} \${parsed.name}] \${host}\` : host;
 
                       html += \`
-                      <div style="min-width: 250px; background: rgba(120,120,120,0.03); border: 1px solid var(--border); border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 10px;">
-                          <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">\${host}</div>
+                      <div class="uni-card">
+                          <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="\${host}">\${displayHost}</div>
                           <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center;">
                               <span style="color: var(--text-sec);">节点延迟:</span>
                               <span id="uni-ping-\${index}" data-target="\${targetUrl}" onclick="pingUniversal(\${index}, '\${targetUrl}')" style="cursor:pointer; color: var(--text-sec); background: var(--card); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);">测速中...</span>
@@ -1961,7 +2080,7 @@ export default {
                               <span style="color: var(--text-sec);">真实播放:</span><span style="color: #34c759; font-weight: 600;">\${item.playCount} 次</span>
                           </div>
                           <div style="display: flex; justify-content: space-between; font-size: 12px;">
-                              <span style="color: var(--text-sec);">主要受众:</span><span style="color: var(--text-sec);">\${locStr}</span>
+                              <span style="color: var(--text-sec);">访客地区(IP):</span><span style="color: var(--text-sec);" title="这代表通过哪个地区的代理或IP进行访问的，并非节点所在国家！">\${locStr}</span>
                           </div>
                           <div style="display: flex; gap: 8px; margin-top: auto; border-top: 1px dashed var(--border); padding-top: 12px;">
                               <button onclick="extractToForm('\${host}', '\${targetUrl}')" class="btn-edit" style="flex: 1; padding: 6px; font-size: 12px;">✍️ 提档转正</button>
