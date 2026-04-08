@@ -1357,7 +1357,7 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极复原版：分布式防重复推送 + 纯净TG简写 + 面板原名复原 + 双端独立适配
+// 终极复原版：分布式防重复推送 + 纯净TG简写 + 面板原名复原 + 双端独立适配 + UI细节修复体验优化
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1823,13 +1823,15 @@ export default {
               .region-title { font-size: 15px; font-weight: bold; margin-bottom: 2px; text-align: center; cursor: pointer; transition: color 0.2s; }
               .region-title:hover { color: var(--primary); text-decoration: underline; }
 
-              .copy-box { background: rgba(0, 122, 255, 0.08); border: 1px dashed var(--primary); color: var(--primary); padding: 8px; border-radius: 6px; font-family: monospace; font-size: 13px; font-weight: 600; text-align: center; cursor: pointer; transition: all 0.2s; user-select: none; }
+              /* 修复：添加 word-break 防止长网址溢出撑破框 */
+              .copy-box { background: rgba(0, 122, 255, 0.08); border: 1px dashed var(--primary); color: var(--primary); padding: 8px; border-radius: 6px; font-family: monospace; font-size: 13px; font-weight: 600; text-align: center; cursor: pointer; transition: all 0.2s; user-select: none; word-break: break-all; overflow-wrap: anywhere; }
               .copy-box:hover { background: var(--primary); color: white; border-style: solid; box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3); }
               
               .tg-eye-icon { stroke: var(--text); opacity: 0.5; transition: opacity 0.2s; }
               .tg-eye-icon:hover { opacity: 1; }
               
-              .toggle-switch { appearance: none; width: 36px; height: 20px; background: var(--border); border-radius: 10px; position: relative; cursor: pointer; outline: none; transition: background 0.3s; margin-right: 8px; }
+              /* 修复：添加 flex-shrink: 0 彻底防止手机端开关被挤压形变错位 */
+              .toggle-switch { appearance: none; width: 36px; height: 20px; background: var(--border); border-radius: 10px; position: relative; cursor: pointer; outline: none; transition: background 0.3s; margin-right: 8px; flex-shrink: 0; }
               .toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: white; border-radius: 50%; transition: transform 0.3s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
               .toggle-switch:checked { background: #34c759; }
               .toggle-switch:checked::after { transform: translateX(16px); }
@@ -1888,7 +1890,7 @@ export default {
                               
                               <div style="display:flex; align-items:center; color:var(--text); font-size:14px; margin-top:4px;">
                                   <input type="checkbox" id="tgMaskToggle" class="toggle-switch" checked>
-                                  <label for="tgMaskToggle" style="cursor:pointer; user-select:none;">开启数据脱敏 (使用 ◻️ 隐藏真实 IP/域名，关闭则显示明文)</label>
+                                  <label for="tgMaskToggle" style="cursor:pointer; user-select:none; line-height:1.4;">开启数据脱敏 (使用 ◻️ 隐藏真实 IP/域名，关闭则显示明文)</label>
                               </div>
 
                               <div style="display:flex; gap:10px;">
@@ -1919,16 +1921,19 @@ export default {
                       wrapper.innerHTML = injectHTML;
                       targetNode.parentNode.insertBefore(wrapper, targetNode.nextSibling);
                       
-                      fetch('/api/get-tg').then(r => r.json()).then(d => {
-                          if(d.success) {
-                              if(d.token) document.getElementById('tgToken').value = d.token;
-                              if(d.chatId) document.getElementById('tgChatId').value = d.chatId;
-                              document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
-                          }
-                      }).catch(e => {});
+                      // 优化：将网络请求和DOM操作放入 setTimeout，避免阻塞主页面的第一帧渲染，彻底解决面板打开慢的问题
+                      setTimeout(() => {
+                          fetch('/api/get-tg').then(r => r.json()).then(d => {
+                              if(d.success) {
+                                  if(d.token) document.getElementById('tgToken').value = d.token;
+                                  if(d.chatId) document.getElementById('tgChatId').value = d.chatId;
+                                  document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
+                              }
+                          }).catch(e => {});
 
-                      loadCluster();
-                      loadUniversalNodes();
+                          loadCluster();
+                          loadUniversalNodes();
+                      }, 300);
                   }
               });
               observer.observe(document.body, { childList: true, subtree: true });
@@ -2074,7 +2079,7 @@ export default {
                           <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="\${host}">\${displayHost}</div>
                           <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center;">
                               <span style="color: var(--text-sec);">节点延迟:</span>
-                              <span id="uni-ping-\${index}" data-target="\${targetUrl}" onclick="pingUniversal(\${index}, '\${targetUrl}')" style="cursor:pointer; color: var(--text-sec); background: var(--card); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);">测速中...</span>
+                              <span id="uni-ping-\${index}" data-target="\${targetUrl}" onclick="pingUniversal(\${index}, '\${targetUrl}')" style="cursor:pointer; color: var(--text-sec); background: var(--card); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);">等待测速...</span>
                           </div>
                           <div style="display: flex; justify-content: space-between; font-size: 12px;">
                               <span style="color: var(--text-sec);">真实播放:</span><span style="color: #34c759; font-weight: 600;">\${item.playCount} 次</span>
@@ -2089,7 +2094,11 @@ export default {
                       </div>\`;
                   });
                   container.innerHTML = html;
-                  d.data.forEach((item, index) => { setTimeout(() => pingUniversal(index, 'https://' + item.prefix.replace('通用: ', '').trim()), 500 * index); });
+                  
+                  // 优化：延迟 1.5 秒再开始静默测速，不占用主页面初次打开的网络资源
+                  setTimeout(() => {
+                      d.data.forEach((item, index) => { setTimeout(() => pingUniversal(index, 'https://' + item.prefix.replace('通用: ', '').trim()), 500 * index); });
+                  }, 1500);
               } catch(e) {}
           };
 
