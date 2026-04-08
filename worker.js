@@ -1357,7 +1357,7 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极复原版：分布式防重复推送 + 纯净TG简写 + 面板原名复原 + 双端独立适配 + UI细节修复体验优化
+// 终极复原版：分布式防重复推送 + 纯净TG简写 + 面板原名复原 + 双端独立适配 + UI细节修复体验优化 + 代理/直连最新访问双重判定
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1680,7 +1680,19 @@ export default {
     if (url.pathname === "/api/get-universal" && request.method === "GET") {
         if (!env.DB) return Response.json({ success: false, data: [] });
         try {
-            const { results } = await env.DB.prepare(`SELECT prefix, MAX(timestamp) as lastActive, COUNT(*) as playCount, (SELECT country FROM visitor_logs v2 WHERE v2.prefix = v1.prefix GROUP BY country ORDER BY COUNT(*) DESC LIMIT 1) as topCountry FROM visitor_logs v1 WHERE prefix LIKE '%通用%' GROUP BY prefix ORDER BY lastActive DESC`).all();
+            // SQL核心升级：同时抓取此节点下最新的一条国家记录(latestCountry)和最新的一条IP记录(latestIp)
+            const { results } = await env.DB.prepare(`
+                SELECT prefix, 
+                       MAX(timestamp) as lastActive, 
+                       COUNT(*) as playCount, 
+                       (SELECT country FROM visitor_logs v2 WHERE v2.prefix = v1.prefix GROUP BY country ORDER BY COUNT(*) DESC LIMIT 1) as topCountry,
+                       (SELECT country FROM visitor_logs v3 WHERE v3.prefix = v1.prefix ORDER BY timestamp DESC LIMIT 1) as latestCountry,
+                       (SELECT ip FROM visitor_logs v4 WHERE v4.prefix = v1.prefix ORDER BY timestamp DESC LIMIT 1) as latestIp
+                FROM visitor_logs v1 
+                WHERE prefix LIKE '%通用%' 
+                GROUP BY prefix 
+                ORDER BY lastActive DESC
+            `).all();
             return Response.json({ success: true, data: results });
         } catch(e) { return Response.json({ success: false, data: [] }); }
     }
@@ -1775,7 +1787,6 @@ export default {
       if (html.includes('</body>')) {
           const injectScript = `
           <style>
-              /* 电脑端默认保留你想要的250px固定宽度！ */
               .cluster-btn { 
                   width: 250px; 
                   padding: 12px; 
@@ -1790,12 +1801,10 @@ export default {
               }
               .cluster-btn.active { border: 1px solid var(--primary); box-shadow: 0 4px 12px rgba(0,113,227,0.15); }
               
-              /* 媒体查询：只有在手机端（屏幕宽度小于600像素时），才强制伸缩到100%铺满屏幕，防止留白！ */
               @media (max-width: 600px) {
                   .cluster-btn { width: 100% !important; }
               }
               
-              /* 完美保留的横向滑动拖拽，绝对不折行堆叠 */
               .uni-scroll-container {
                   display: flex;
                   flex-wrap: nowrap; 
@@ -1817,20 +1826,18 @@ export default {
                   padding: 15px; 
                   display: flex; 
                   flex-direction: column; 
-                  gap: 10px;
+                  gap: 8px;
               }
 
               .region-title { font-size: 15px; font-weight: bold; margin-bottom: 2px; text-align: center; cursor: pointer; transition: color 0.2s; }
               .region-title:hover { color: var(--primary); text-decoration: underline; }
 
-              /* 修复：添加 word-break 防止长网址溢出撑破框 */
               .copy-box { background: rgba(0, 122, 255, 0.08); border: 1px dashed var(--primary); color: var(--primary); padding: 8px; border-radius: 6px; font-family: monospace; font-size: 13px; font-weight: 600; text-align: center; cursor: pointer; transition: all 0.2s; user-select: none; word-break: break-all; overflow-wrap: anywhere; }
               .copy-box:hover { background: var(--primary); color: white; border-style: solid; box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3); }
               
               .tg-eye-icon { stroke: var(--text); opacity: 0.5; transition: opacity 0.2s; }
               .tg-eye-icon:hover { opacity: 1; }
               
-              /* 修复：添加 flex-shrink: 0 彻底防止手机端开关被挤压形变错位 */
               .toggle-switch { appearance: none; width: 36px; height: 20px; background: var(--border); border-radius: 10px; position: relative; cursor: pointer; outline: none; transition: background 0.3s; margin-right: 8px; flex-shrink: 0; }
               .toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: white; border-radius: 50%; transition: transform 0.3s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
               .toggle-switch:checked { background: #34c759; }
@@ -1921,7 +1928,6 @@ export default {
                       wrapper.innerHTML = injectHTML;
                       targetNode.parentNode.insertBefore(wrapper, targetNode.nextSibling);
                       
-                      // 优化：将网络请求和DOM操作放入 setTimeout，避免阻塞主页面的第一帧渲染，彻底解决面板打开慢的问题
                       setTimeout(() => {
                           fetch('/api/get-tg').then(r => r.json()).then(d => {
                               if(d.success) {
@@ -2069,24 +2075,51 @@ export default {
                   d.data.forEach((item, index) => {
                       let host = item.prefix.replace('通用: ', '').trim();
                       let targetUrl = 'https://' + host; 
+                      
+                      // 1. 历史积累最多的地区 (原版功能)
                       let locStr = item.topCountry === 'Unknown' ? '未知' : window.getFlagEmoji(item.topCountry) + ' ' + item.topCountry;
                       
+                      // 2. 最新判断功能 (用于判断本次是否使用了代理)
+                      let latestLocStr = (!item.latestCountry || item.latestCountry === 'Unknown') ? '未知' : window.getFlagEmoji(item.latestCountry) + ' ' + item.latestCountry;
+                      
+                      // 精简时间格式 (仅提取 HH:MM)
+                      let latestTime = item.lastActive ? item.lastActive.split(' ')[1] : ''; 
+                      if (latestTime) latestTime = latestTime.substring(0, 5); 
+                      
+                      // 真实访客最后一次使用的 IP
+                      let latestIp = item.latestIp || '未知';
+
                       let parsed = window.parseCloudRegion(host);
                       let displayHost = parsed.name !== '未知' ? \`[\${parsed.icon} \${parsed.name}] \${host}\` : host;
 
                       html += \`
                       <div class="uni-card">
                           <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="\${host}">\${displayHost}</div>
-                          <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center;">
+                          
+                          <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center; margin-top: 2px;">
                               <span style="color: var(--text-sec);">节点延迟:</span>
-                              <span id="uni-ping-\${index}" data-target="\${targetUrl}" onclick="pingUniversal(\${index}, '\${targetUrl}')" style="cursor:pointer; color: var(--text-sec); background: var(--card); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);">等待测速...</span>
+                              <span id="uni-ping-\${index}" data-target="\${targetUrl}" onclick="pingUniversal(\${index}, '\${targetUrl}')" style="cursor:pointer; color: var(--text-sec); background: var(--card); padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); font-size: 11px;">等待测速...</span>
                           </div>
+                          
                           <div style="display: flex; justify-content: space-between; font-size: 12px;">
-                              <span style="color: var(--text-sec);">真实播放:</span><span style="color: #34c759; font-weight: 600;">\${item.playCount} 次</span>
+                              <span style="color: var(--text-sec);">真实播放:</span>
+                              <span style="color: #34c759; font-weight: 600;">\${item.playCount} 次</span>
                           </div>
+                          
                           <div style="display: flex; justify-content: space-between; font-size: 12px;">
-                              <span style="color: var(--text-sec);">访客地区(IP):</span><span style="color: var(--text-sec);" title="这代表通过哪个地区的代理或IP进行访问的，并非节点所在国家！">\${locStr}</span>
+                              <span style="color: var(--text-sec);" title="历史累计访问次数最多的地区">常访地区:</span>
+                              <span style="color: var(--text-sec);">\${locStr}</span>
                           </div>
+                          
+                          <!-- UI升级：新增"最新访问"高亮模块 (悬浮可看真实IP和完整时间) -->
+                          <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center; background: rgba(0, 122, 255, 0.08); padding: 4px 6px; border-radius: 6px; margin-top: 2px;">
+                              <span style="color: var(--primary); font-weight: 600;">最新访问:</span>
+                              <div style="text-align: right; cursor: help;" title="用于分辨您刚刚是否使用了代理\\n最后访问 IP: \${latestIp}\\n最后访问时间: \${item.lastActive}">
+                                  <span style="color: var(--text); font-weight: 600;">\${latestLocStr}</span>
+                                  <span style="font-size: 10px; color: var(--text-sec); margin-left: 4px;">\${latestTime}</span>
+                              </div>
+                          </div>
+
                           <div style="display: flex; gap: 8px; margin-top: auto; border-top: 1px dashed var(--border); padding-top: 12px;">
                               <button onclick="extractToForm('\${host}', '\${targetUrl}')" class="btn-edit" style="flex: 1; padding: 6px; font-size: 12px;">✍️ 提档转正</button>
                               <button onclick="delUniversal('\${item.prefix}')" class="btn-del" style="flex: 1; padding: 6px; font-size: 12px;">🗑️ 删除</button>
@@ -2095,7 +2128,6 @@ export default {
                   });
                   container.innerHTML = html;
                   
-                  // 优化：延迟 1.5 秒再开始静默测速，不占用主页面初次打开的网络资源
                   setTimeout(() => {
                       d.data.forEach((item, index) => { setTimeout(() => pingUniversal(index, 'https://' + item.prefix.replace('通用: ', '').trim()), 500 * index); });
                   }, 1500);
