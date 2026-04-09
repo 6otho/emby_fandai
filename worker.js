@@ -1357,7 +1357,7 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极复原版：分布式防重复推送 + 纯净TG简写 + 面板原名复原 + 双端独立适配 + UI细节修复体验优化 + 代理/直连最新访问双重判定
+// 终极完美版：TG免打码服名 + 面板域名脱敏一键复制 + IP精简隐藏(3框) + 数据库底层极速索引优化(面板秒开)
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1367,7 +1367,6 @@ function getFlagEmoji(countryCode) {
     return String.fromCodePoint(...codePoints);
 }
 
-// 地区全景解析：同时输出全称和简写。彻底锁死 ap-east 为香港！
 function parseCloudRegion(host) {
     if (!host) return { icon: '🌐', name: '未知', short: '未知' };
     const h = String(host).toLowerCase();
@@ -1397,13 +1396,14 @@ function maskDomain(host) {
     return `${firstPart.substring(0, 3)}◻️◻️◻️.${lastPart}`;
 }
 
+// 优化：IP只隐藏最后一段(三个框)
 function maskIp(ip) {
     if (!ip || ip === 'Unknown') return 'Unknown';
     const parts = ip.split('.');
-    if (parts.length === 4) return `${parts[0]}.${parts[1]}.◻️◻️◻️.◻️◻️◻️`;
+    if (parts.length === 4) return `${parts[0]}.${parts[1]}.${parts[2]}.◻️◻️◻️`;
     if (ip.includes(':')) {
         const v6 = ip.split(':');
-        if (v6.length > 3) return `${v6[0]}:${v6[1]}:◻️◻️◻️::◻️◻️◻️`;
+        if (v6.length > 3) return `${v6[0]}:${v6[1]}:${v6[2]}:◻️◻️◻️`;
     }
     return `◻️◻️◻️`;
 }
@@ -1414,10 +1414,28 @@ function formatDisplay(rawStr, isMaskEnabled, isIp = false) {
     return `<code>${masked}</code>`; 
 }
 
+async function fetchEmbyServerName(host) {
+    try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(`https://${host}/System/Info/Public`, { 
+            headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+            signal: controller.signal 
+        });
+        clearTimeout(id);
+        if (res.ok && res.headers.get("content-type")?.includes("json")) {
+            const data = await res.json();
+            if (data.ServerName) return data.ServerName;
+        }
+    } catch(e) {}
+    return host;
+}
+
 async function generateTgReport(env, ctx) {
-    let todayCount = 0, universalCount = 0, topUniversalNode = "无记录", topUniLocation = "无记录", topLocation = "无记录", topNode = "无记录", recentLogs = [];
+    let todayCount = 0, universalCount = 0, topUniversalNode = "无记录", topUniLocation = "无记录", topLocation = "无记录", topNode = "无记录", favEmby = "无记录", recentLogs = [];
     let regionMap = {};
     let dbRegions = {}; 
+    let serverNamesMap = {}; 
     let isMaskEnabled = true; 
     const nowTimestamp = new Date(Date.now() + 8 * 3600000).toISOString().replace("T", " ").split(".")[0];
     
@@ -1429,6 +1447,11 @@ async function generateTgReport(env, ctx) {
             const cnReq = await env.DB.prepare("SELECT host, region FROM cluster_nodes_v5").all();
             if (cnReq && cnReq.results) {
                 cnReq.results.forEach(r => dbRegions[r.host] = r.region);
+            }
+
+            const namesReq = await env.DB.prepare("SELECT host, server_name FROM emby_server_names").all();
+            if (namesReq && namesReq.results) {
+                namesReq.results.forEach(r => serverNamesMap[r.host] = r.server_name);
             }
 
             const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours')").first();
@@ -1459,11 +1482,20 @@ async function generateTgReport(env, ctx) {
                 return `🌐 `;
             }
 
+            function getDisplayName(host, maskEnabled) {
+                if (!host) return "Unknown";
+                const sName = serverNamesMap[host];
+                if (sName && !sName.includes('.')) {
+                    return `<b>${sName}</b>`; 
+                }
+                return formatDisplay(host, maskEnabled);
+            }
+
             const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours') AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
             if (topUniRow && topUniRow.prefix) {
                 let cleanHost = topUniRow.prefix.replace('通用:', '').replace('通用: ', '').trim();
                 let tgRegionStr = getTgNodeDisplay(cleanHost);
-                topUniversalNode = `${tgRegionStr}${formatDisplay(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
+                topUniversalNode = `${tgRegionStr}${getDisplayName(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
             }
 
             const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') GROUP BY country ORDER BY c DESC LIMIT 1").first();
@@ -1473,6 +1505,23 @@ async function generateTgReport(env, ctx) {
             if (nodeRow && nodeRow.prefix) {
                 let tgRegionStr = getTgNodeDisplay(nodeRow.prefix);
                 topNode = `${tgRegionStr}${formatDisplay(nodeRow.prefix, isMaskEnabled)} (共 <code>${nodeRow.c}</code> 次)`;
+            }
+
+            const favRow = await env.DB.prepare(`
+                SELECT REPLACE(prefix, '通用: ', '') as host, COUNT(*) as c
+                FROM visitor_logs 
+                WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix LIKE '%通用%'
+                GROUP BY host
+                ORDER BY c DESC LIMIT 1
+            `).first();
+            
+            if (favRow && favRow.host) {
+                const sName = serverNamesMap[favRow.host];
+                if (sName && !sName.includes('.')) {
+                    favEmby = `<b>${sName}</b> (共 <code>${favRow.c}</code> 次)`;
+                } else {
+                    favEmby = `${formatDisplay(favRow.host, isMaskEnabled)} <i style="color:gray;">(未设置服名)</i> (共 <code>${favRow.c}</code> 次)`;
+                }
             }
 
             const rReq = await env.DB.prepare("SELECT host, target, COUNT(*) as c FROM region_hits_v2 WHERE datetime(timestamp) >= datetime('now', '-24 hours') GROUP BY host, target ORDER BY host, c DESC").all();
@@ -1488,6 +1537,7 @@ async function generateTgReport(env, ctx) {
             if (logsReq && logsReq.results) recentLogs = logsReq.results;
         } catch (e) {}
     }
+    
     let t24 = "未知", t7 = "未知", t30 = "未知";
     try {
         const mockReq = new Request("https://localhost/api/analytics", { method: "GET", headers: { "Cookie": `admin_token=${env.ADMIN_TOKEN}` } });
@@ -1519,6 +1569,13 @@ async function generateTgReport(env, ctx) {
         return `🌐 `;
     }
 
+    function safeGetDisplayName(host, maskEnabled) {
+        if (!host) return "Unknown";
+        const sName = serverNamesMap[host];
+        if (sName && !sName.includes('.')) return `<b>${sName}</b>`; 
+        return formatDisplay(host, maskEnabled);
+    }
+
     let msg = `📊 <b>Emby 全局播放数据统计报表</b>\n<i>🕒 统计时间: ${nowTimestamp}</i>\n\n`;
     msg += `📈 <b>【 播放数据 (近24H) 】</b>\n├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n├ 🔗 通用反代: <code>${universalCount}</code> 次\n├ 🌍 访客来源最多: ${topUniLocation}\n└ 🔥 最热反代目标: ${topUniversalNode}\n\n`;
     
@@ -1541,7 +1598,8 @@ async function generateTgReport(env, ctx) {
                 if (t.target === '原生直接访问') {
                     msg += `${childLine}${targetPrefix} 🏠 原生直接访问 : <code>${t.c}</code> 次\n`;
                 } else {
-                    msg += `${childLine}${targetPrefix} 🎯 反代至 ${formatDisplay(t.target, isMaskEnabled)} : <code>${t.c}</code> 次\n`;
+                    let dispTarget = safeGetDisplayName(t.target, isMaskEnabled);
+                    msg += `${childLine}${targetPrefix} 🎯 反代至 ${dispTarget} : <code>${t.c}</code> 次\n`;
                 }
             });
         }); 
@@ -1549,7 +1607,7 @@ async function generateTgReport(env, ctx) {
         msg += `└ 📡 暂无数据\n`; 
     }
     
-    msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 访客来源最多: ${topLocation}\n└ 🚀 最热线路节点: ${topNode}\n\n`;
+    msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 访客来源最多: ${topLocation}\n├ 🎬 最喜欢的EMBY: ${favEmby}\n└ 🚀 最热线路节点: ${topNode}\n\n`;
     msg += `🌐 <b>【 主域名流量消耗 】</b>\n├ ⏳ 近 24 小时内: <code>${t24}</code>\n├ 📅 近  7  天内: <code>${t7}</code>\n└ 🗓 近 30 天内: <code>${t30}</code>\n`;
     
     if (recentLogs.length > 0) {
@@ -1560,8 +1618,10 @@ async function generateTgReport(env, ctx) {
             let cleanHost = rawPrefix.replace('通用:', '').replace('通用: ', '').trim();
             let targetType = isUni ? '🔗 反代至' : '🎯 目标';
             let tgRegionStr = safeGetTgNodeDisplay(cleanHost);
+            
+            let dispName = isUni ? safeGetDisplayName(cleanHost, isMaskEnabled) : formatDisplay(cleanHost, isMaskEnabled);
 
-            msg += `\n\n▶️ <b>时间</b>: ${log.timestamp || '刚刚'}\n├ 📌 <b>${targetType}</b>: ${tgRegionStr}${formatDisplay(cleanHost, isMaskEnabled)}\n├ 🌍 <b>访客地区</b>: ${getFlagEmoji(log.country)} ${log.country}\n├ 🌐 <b>访客 IP</b>: ${formatDisplay(log.ip, isMaskEnabled, true)}\n└ 📱 <b>设备</b>: <code>${log.ua || 'Unknown'}</code>`; 
+            msg += `\n\n▶️ <b>时间</b>: ${log.timestamp || '刚刚'}\n├ 📌 <b>${targetType}</b>: ${tgRegionStr}${dispName}\n├ 🌍 <b>访客地区</b>: ${getFlagEmoji(log.country)} ${log.country}\n├ 🌐 <b>访客 IP</b>: ${formatDisplay(log.ip, isMaskEnabled, true)}\n└ 📱 <b>设备</b>: <code>${log.ua || 'Unknown'}</code>`; 
         });
     }
     return msg;
@@ -1573,17 +1633,10 @@ export default {
     if (env.DB) {
       try {
         await env.DB.prepare("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)").run().catch(() => {});
-        
-        // 【核心功能】：多Worker并发阻挡器 (防重复发报表)
         const nowMs = Date.now();
         const lastRunRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'LAST_CRON_TIME'").first();
-        // 如果 5 分钟内已经有其它 Worker 发送过了，当前 Worker 直接静默退出
-        if (lastRunRow && (nowMs - parseInt(lastRunRow.value)) < 5 * 60 * 1000) {
-            return; 
-        }
-        // 抢占锁，将当前时间写入数据库
+        if (lastRunRow && (nowMs - parseInt(lastRunRow.value)) < 5 * 60 * 1000) return; 
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('LAST_CRON_TIME', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(nowMs.toString()).run();
-
         const tokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_BOT_TOKEN'").first();
         const chatRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_CHAT_ID'").first();
         if (tokenRow) dbTgToken = tokenRow.value;
@@ -1610,6 +1663,15 @@ export default {
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS cluster_nodes_v5 (host TEXT PRIMARY KEY, url TEXT, region TEXT, updated_at DATETIME)").run().catch(() => {});
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS region_hits_v2 (timestamp DATETIME, host TEXT, target TEXT)").run().catch(() => {});
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS visitor_logs (timestamp DATETIME, prefix TEXT, ip TEXT, country TEXT, ua TEXT)").run().catch(() => {});
+      await env.DB.prepare("CREATE TABLE IF NOT EXISTS emby_server_names (host TEXT PRIMARY KEY, server_name TEXT)").run().catch(() => {});
+      
+      // 【核心性能优化】: 为频繁查询建立高速缓存索引，非阻塞执行，面板加载将变为秒开！
+      if (ctx && ctx.waitUntil) {
+          ctx.waitUntil((async () => {
+              await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_vl_prefix_time ON visitor_logs(prefix, timestamp DESC)").run().catch(() => {});
+              await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_vl_country ON visitor_logs(prefix, country)").run().catch(() => {});
+          })());
+      }
     }
 
     let dbTgToken = null, dbTgChatId = null;
@@ -1647,6 +1709,12 @@ export default {
               const country = request.headers.get("CF-IPCountry") || "Unknown";
               const ua = request.headers.get("User-Agent") || "Unknown";
               await env.DB.prepare("INSERT INTO visitor_logs (timestamp, prefix, ip, country, ua) VALUES (?, ?, ?, ?, ?)").bind(timestamp, "通用: " + proxyTarget, ip, country, ua).run();
+              
+              const nameCheck = await env.DB.prepare("SELECT server_name FROM emby_server_names WHERE host = ?").bind(proxyTarget).first().catch(()=>null);
+              if (!nameCheck || nameCheck.server_name === proxyTarget) {
+                  const sName = await fetchEmbyServerName(proxyTarget);
+                  await env.DB.prepare("INSERT INTO emby_server_names (host, server_name) VALUES (?, ?) ON CONFLICT(host) DO UPDATE SET server_name=excluded.server_name").bind(proxyTarget, sName).run().catch(()=>{});
+              }
             }
           } catch (err) {}
         })());
@@ -1680,17 +1748,18 @@ export default {
     if (url.pathname === "/api/get-universal" && request.method === "GET") {
         if (!env.DB) return Response.json({ success: false, data: [] });
         try {
-            // SQL核心升级：同时抓取此节点下最新的一条国家记录(latestCountry)和最新的一条IP记录(latestIp)
+            // 得益于新增加的索引，这个复杂查询的速度将飙升
             const { results } = await env.DB.prepare(`
-                SELECT prefix, 
-                       MAX(timestamp) as lastActive, 
-                       COUNT(*) as playCount, 
-                       (SELECT country FROM visitor_logs v2 WHERE v2.prefix = v1.prefix GROUP BY country ORDER BY COUNT(*) DESC LIMIT 1) as topCountry,
+                SELECT v1.prefix, 
+                       MAX(v1.timestamp) as lastActive, 
+                       COUNT(v1.timestamp) as playCount, 
+                       (SELECT country FROM visitor_logs v2 WHERE v2.prefix = v1.prefix GROUP BY country ORDER BY COUNT(country) DESC LIMIT 1) as topCountry,
                        (SELECT country FROM visitor_logs v3 WHERE v3.prefix = v1.prefix ORDER BY timestamp DESC LIMIT 1) as latestCountry,
-                       (SELECT ip FROM visitor_logs v4 WHERE v4.prefix = v1.prefix ORDER BY timestamp DESC LIMIT 1) as latestIp
+                       (SELECT ip FROM visitor_logs v4 WHERE v4.prefix = v1.prefix ORDER BY timestamp DESC LIMIT 1) as latestIp,
+                       (SELECT server_name FROM emby_server_names e WHERE e.host = REPLACE(v1.prefix, '通用: ', '')) as serverName
                 FROM visitor_logs v1 
-                WHERE prefix LIKE '%通用%' 
-                GROUP BY prefix 
+                WHERE v1.prefix LIKE '%通用%' 
+                GROUP BY v1.prefix 
                 ORDER BY lastActive DESC
             `).all();
             return Response.json({ success: true, data: results });
@@ -1701,8 +1770,24 @@ export default {
         if (!env.DB) return Response.json({ success: false });
         try {
             const body = await request.json();
-            if (body.prefix) await env.DB.prepare("DELETE FROM visitor_logs WHERE prefix = ?").bind(body.prefix).run();
+            if (body.prefix) {
+                await env.DB.prepare("DELETE FROM visitor_logs WHERE prefix = ?").bind(body.prefix).run();
+                const pureHost = body.prefix.replace('通用: ', '').trim();
+                await env.DB.prepare("DELETE FROM emby_server_names WHERE host = ?").bind(pureHost).run().catch(()=>{});
+            }
             return Response.json({ success: true });
+        } catch(e) { return Response.json({ success: false, error: e.message }); }
+    }
+
+    if (url.pathname === "/api/rename-emby" && request.method === "POST") {
+        if (!env.DB) return Response.json({ success: false });
+        try {
+            const body = await request.json();
+            if (body.host && body.name) {
+                await env.DB.prepare("INSERT INTO emby_server_names (host, server_name) VALUES (?, ?) ON CONFLICT(host) DO UPDATE SET server_name=excluded.server_name").bind(body.host, body.name).run();
+                return Response.json({ success: true });
+            }
+            return Response.json({ success: false });
         } catch(e) { return Response.json({ success: false, error: e.message }); }
     }
 
@@ -1787,47 +1872,15 @@ export default {
       if (html.includes('</body>')) {
           const injectScript = `
           <style>
-              .cluster-btn { 
-                  width: 250px; 
-                  padding: 12px; 
-                  border-radius: 10px; 
-                  background: var(--card); 
-                  border: 1px solid var(--border); 
-                  display: flex; 
-                  flex-direction: column; 
-                  gap: 8px; 
-                  box-shadow: 0 2px 6px rgba(0,0,0,0.05); 
-                  box-sizing: border-box;
-              }
+              .cluster-btn { width: 250px; padding: 12px; border-radius: 10px; background: var(--card); border: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); box-sizing: border-box; }
               .cluster-btn.active { border: 1px solid var(--primary); box-shadow: 0 4px 12px rgba(0,113,227,0.15); }
+              @media (max-width: 600px) { .cluster-btn { width: 100% !important; } }
               
-              @media (max-width: 600px) {
-                  .cluster-btn { width: 100% !important; }
-              }
-              
-              .uni-scroll-container {
-                  display: flex;
-                  flex-wrap: nowrap; 
-                  gap: 16px;
-                  overflow-x: auto; 
-                  padding: 15px 0 5px 0;
-                  scrollbar-width: thin;
-              }
+              .uni-scroll-container { display: flex; flex-wrap: nowrap; gap: 16px; overflow-x: auto; padding: 15px 0 5px 0; scrollbar-width: thin; }
               .uni-scroll-container::-webkit-scrollbar { height: 6px; }
               .uni-scroll-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-              .uni-card {
-                  flex: 0 0 auto; 
-                  width: 260px;
-                  box-sizing: border-box;
-                  background: rgba(120,120,120,0.03); 
-                  border: 1px solid var(--border); 
-                  border-radius: 12px; 
-                  padding: 15px; 
-                  display: flex; 
-                  flex-direction: column; 
-                  gap: 8px;
-              }
+              .uni-card { flex: 0 0 auto; width: 260px; box-sizing: border-box; background: rgba(120,120,120,0.03); border: 1px solid var(--border); border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 8px; }
 
               .region-title { font-size: 15px; font-weight: bold; margin-bottom: 2px; text-align: center; cursor: pointer; transition: color 0.2s; }
               .region-title:hover { color: var(--primary); text-decoration: underline; }
@@ -1859,6 +1912,18 @@ export default {
               return { icon: '🌐', name: '未知' };
           };
 
+          window.maskDomainFrontend = function(host) {
+              if (!host || !host.includes('.')) return host;
+              const parts = host.split('.');
+              const first = parts[0];
+              const last = parts[parts.length - 1];
+              if (parts.length > 2) {
+                  if (parts[1].toLowerCase() === 'emby') return \`\${first}.emby.◻️◻️◻️.\${last}\`;
+                  return \`\${first}.◻️◻️◻️.\${last}\`;
+              }
+              return \`\${first.substring(0, 3)}◻️◻️◻️.\${last}\`;
+          };
+
           document.addEventListener("DOMContentLoaded", () => {
               const injectHTML = \`
                   <div id="my-custom-panel-wrapper">
@@ -1869,7 +1934,6 @@ export default {
                                   <div style="font-weight: 600; font-size: 16px; color: var(--text);">🌐 地区节点自动发现与管理</div>
                               </div>
                           </div>
-                          <!-- 节点存放区 -->
                           <div id="cluster-switcher-container" style="display:flex; gap:16px; flex-wrap:wrap; padding: 15px 0 5px 0;">
                               <div style="color:var(--text-sec); font-size: 13px; margin-left: 5px;">正在探测地区节点...</div>
                           </div>
@@ -1897,7 +1961,7 @@ export default {
                               
                               <div style="display:flex; align-items:center; color:var(--text); font-size:14px; margin-top:4px;">
                                   <input type="checkbox" id="tgMaskToggle" class="toggle-switch" checked>
-                                  <label for="tgMaskToggle" style="cursor:pointer; user-select:none; line-height:1.4;">开启数据脱敏 (使用 ◻️ 隐藏真实 IP/域名，关闭则显示明文)</label>
+                                  <label for="tgMaskToggle" style="cursor:pointer; user-select:none; line-height:1.4;">开启数据脱敏 (开启后自动隐藏访客IP和未备注的域名)</label>
                               </div>
 
                               <div style="display:flex; gap:10px;">
@@ -1913,7 +1977,6 @@ export default {
                               <div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🌍 通用反代地址收集库</div></div>
                               <button class="btn-submit" onclick="pingAllUniversal()" style="background:#32ade6; padding: 6px 12px; font-size: 12px; border-radius: 8px;">⚡ 全局测速</button>
                           </div>
-                          <!-- 完美保留的横向滑动容器 -->
                           <div id="uni-nodes-container" class="uni-scroll-container">
                               <div style="color:var(--text-sec); font-size: 13px; margin-left: 5px;">加载中...</div>
                           </div>
@@ -1928,18 +1991,16 @@ export default {
                       wrapper.innerHTML = injectHTML;
                       targetNode.parentNode.insertBefore(wrapper, targetNode.nextSibling);
                       
-                      setTimeout(() => {
-                          fetch('/api/get-tg').then(r => r.json()).then(d => {
-                              if(d.success) {
-                                  if(d.token) document.getElementById('tgToken').value = d.token;
-                                  if(d.chatId) document.getElementById('tgChatId').value = d.chatId;
-                                  document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
-                              }
-                          }).catch(e => {});
+                      fetch('/api/get-tg').then(r => r.json()).then(d => {
+                          if(d.success) {
+                              if(d.token) document.getElementById('tgToken').value = d.token;
+                              if(d.chatId) document.getElementById('tgChatId').value = d.chatId;
+                              document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
+                          }
+                      }).catch(e => {});
 
-                          loadCluster();
-                          loadUniversalNodes();
-                      }, 300);
+                      loadCluster();
+                      loadUniversalNodes();
                   }
               });
               observer.observe(document.body, { childList: true, subtree: true });
@@ -1958,9 +2019,22 @@ export default {
                   tempInput.select();
                   document.execCommand("copy");
                   document.body.removeChild(tempInput);
-                  alert('✅ 已成功复制节点地址：\\n' + url);
+                  alert('✅ 已成功复制真实地址：\\n' + url);
               } catch (e) {
                   prompt('⚠️ 请手动复制以下地址:', url);
+              }
+          };
+
+          window.toggleDomainVis = function(idx, real, masked) {
+              const el = document.getElementById('uni-domain-' + idx);
+              if (!el) return;
+              const isMasked = el.getAttribute('data-masked') === 'true';
+              if (isMasked) {
+                  el.textContent = real;
+                  el.setAttribute('data-masked', 'false');
+              } else {
+                  el.textContent = masked;
+                  el.setAttribute('data-masked', 'true');
               }
           };
 
@@ -2061,6 +2135,17 @@ export default {
               } catch(e) {}
           };
 
+          window.renameEmby = async function(host, currentName) {
+              const newName = prompt('✏️ 请为该服设置一个好记的别名 (如: 终点站、桃子等)：\\n(如果留空并确定，将恢复默认)', currentName);
+              if (newName === null) return; 
+              
+              const finalName = newName.trim() === '' ? host : newName.trim();
+              try {
+                  await fetch('/api/rename-emby', { method: 'POST', body: JSON.stringify({ host, name: finalName }) });
+                  loadUniversalNodes(); 
+              } catch(e) { alert('保存失败'); }
+          };
+
           window.loadUniversalNodes = async function() {
               try {
                   const res = await fetch('/api/get-universal');
@@ -2076,25 +2161,39 @@ export default {
                       let host = item.prefix.replace('通用: ', '').trim();
                       let targetUrl = 'https://' + host; 
                       
-                      // 1. 历史积累最多的地区 (原版功能)
                       let locStr = item.topCountry === 'Unknown' ? '未知' : window.getFlagEmoji(item.topCountry) + ' ' + item.topCountry;
-                      
-                      // 2. 最新判断功能 (用于判断本次是否使用了代理)
                       let latestLocStr = (!item.latestCountry || item.latestCountry === 'Unknown') ? '未知' : window.getFlagEmoji(item.latestCountry) + ' ' + item.latestCountry;
                       
-                      // 精简时间格式 (仅提取 HH:MM)
                       let latestTime = item.lastActive ? item.lastActive.split(' ')[1] : ''; 
                       if (latestTime) latestTime = latestTime.substring(0, 5); 
                       
-                      // 真实访客最后一次使用的 IP
                       let latestIp = item.latestIp || '未知';
 
                       let parsed = window.parseCloudRegion(host);
-                      let displayHost = parsed.name !== '未知' ? \`[\${parsed.icon} \${parsed.name}] \${host}\` : host;
+                      let regionPrefix = parsed.name !== '未知' ? \`[\${parsed.icon} \${parsed.name}] \` : '';
+                      let maskedHost = window.maskDomainFrontend(host);
+                      
+                      let sName = item.serverName;
+                      let isEdited = sName && !sName.includes('.');
+                      
+                      let serverNameBadge = \`
+                      <div style="margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+                          <div style="display: flex; align-items: center; gap: 4px;">
+                              <span style="background: rgba(255,149,0,0.1); color: #ff9500; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; display: inline-flex; align-items: center;">
+                                  🎬 \${isEdited ? sName : '未配置服名'}
+                              </span>
+                              <span onclick="renameEmby('\${host}', '\${isEdited ? sName : ''}')" style="cursor:pointer; font-size: 14px; opacity: 0.7; transition: 0.2s; user-select:none;" title="自定义修改服名">✏️</span>
+                          </div>
+                          <svg onclick="toggleDomainVis(\${index}, '\${host}', '\${maskedHost}')" class="tg-eye-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="cursor:pointer;" title="显示/隐藏真实域名"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                      </div>\`;
 
                       html += \`
                       <div class="uni-card">
-                          <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="\${host}">\${displayHost}</div>
+                          \${serverNameBadge}
+                          <!-- 域名展示区，点击一键复制真实域名 -->
+                          <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;" title="点击一键复制真实地址" onclick="forceCopyUrl('\${targetUrl}')">
+                              \${regionPrefix}<span id="uni-domain-\${index}" data-masked="true">\${maskedHost}</span>
+                          </div>
                           
                           <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center; margin-top: 2px;">
                               <span style="color: var(--text-sec);">节点延迟:</span>
@@ -2111,7 +2210,6 @@ export default {
                               <span style="color: var(--text-sec);">\${locStr}</span>
                           </div>
                           
-                          <!-- UI升级：新增"最新访问"高亮模块 (悬浮可看真实IP和完整时间) -->
                           <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center; background: rgba(0, 122, 255, 0.08); padding: 4px 6px; border-radius: 6px; margin-top: 2px;">
                               <span style="color: var(--primary); font-weight: 600;">最新访问:</span>
                               <div style="text-align: right; cursor: help;" title="用于分辨您刚刚是否使用了代理\\n最后访问 IP: \${latestIp}\\n最后访问时间: \${item.lastActive}">
