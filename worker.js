@@ -1357,7 +1357,7 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极完美版：TG免打码服名 + 面板域名脱敏一键复制 + IP精简隐藏(3框) + 数据库底层极速索引优化(面板秒开)
+// 终极满血版：动态幽灵记录抹杀(面板删除TG即刻消失) + 60秒智能去重 + 每日清零 + 免打码服名 + 极致脱敏复制
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1396,7 +1396,6 @@ function maskDomain(host) {
     return `${firstPart.substring(0, 3)}◻️◻️◻️.${lastPart}`;
 }
 
-// 优化：IP只隐藏最后一段(三个框)
 function maskIp(ip) {
     if (!ip || ip === 'Unknown') return 'Unknown';
     const parts = ip.split('.');
@@ -1437,7 +1436,11 @@ async function generateTgReport(env, ctx) {
     let dbRegions = {}; 
     let serverNamesMap = {}; 
     let isMaskEnabled = true; 
-    const nowTimestamp = new Date(Date.now() + 8 * 3600000).toISOString().replace("T", " ").split(".")[0];
+    
+    const nowMs = Date.now() + 8 * 3600000;
+    const nowTimestamp = new Date(nowMs).toISOString().replace("T", " ").split(".")[0];
+    const todayDateStr = nowTimestamp.split(" ")[0]; 
+    const sevenDaysAgoStr = new Date(nowMs - 7 * 86400000).toISOString().replace("T", " ").split(".")[0];
     
     if (env.DB) {
         try {
@@ -1445,20 +1448,18 @@ async function generateTgReport(env, ctx) {
             if (maskRow && maskRow.value === 'false') isMaskEnabled = false;
 
             const cnReq = await env.DB.prepare("SELECT host, region FROM cluster_nodes_v5").all();
-            if (cnReq && cnReq.results) {
-                cnReq.results.forEach(r => dbRegions[r.host] = r.region);
-            }
+            if (cnReq && cnReq.results) cnReq.results.forEach(r => dbRegions[r.host] = r.region);
 
             const namesReq = await env.DB.prepare("SELECT host, server_name FROM emby_server_names").all();
-            if (namesReq && namesReq.results) {
-                namesReq.results.forEach(r => serverNamesMap[r.host] = r.server_name);
-            }
+            if (namesReq && namesReq.results) namesReq.results.forEach(r => serverNamesMap[r.host] = r.server_name);
 
-            const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours')").first();
+            const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE timestamp LIKE ?").bind(todayDateStr + '%').first();
             if (todayRow) todayCount = todayRow.c;
-            const uniRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours') AND prefix LIKE '%通用%'").first();
+            
+            const uniRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE timestamp LIKE ? AND prefix LIKE '%通用%'").bind(todayDateStr + '%').first();
             if (uniRow) universalCount = uniRow.c;
-            const topUniLocRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix LIKE '%通用%' GROUP BY country ORDER BY c DESC LIMIT 1").first();
+            
+            const topUniLocRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? AND prefix LIKE '%通用%' GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
             if (topUniLocRow && topUniLocRow.country) topUniLocation = `${getFlagEmoji(topUniLocRow.country)} <b>${topUniLocRow.country}</b> (共 <code>${topUniLocRow.c}</code> 次)`;
             
             function getTgNodeDisplay(host) {
@@ -1491,17 +1492,17 @@ async function generateTgReport(env, ctx) {
                 return formatDisplay(host, maskEnabled);
             }
 
-            const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-24 hours') AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
+            const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE timestamp LIKE ? AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").bind(todayDateStr + '%').first();
             if (topUniRow && topUniRow.prefix) {
                 let cleanHost = topUniRow.prefix.replace('通用:', '').replace('通用: ', '').trim();
                 let tgRegionStr = getTgNodeDisplay(cleanHost);
                 topUniversalNode = `${tgRegionStr}${getDisplayName(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
             }
 
-            const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') GROUP BY country ORDER BY c DESC LIMIT 1").first();
+            const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
             if (locRow && locRow.country) topLocation = `${getFlagEmoji(locRow.country)} <b>${locRow.country}</b> (共 <code>${locRow.c}</code> 次)`;
             
-            const nodeRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix NOT LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").first();
+            const nodeRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? AND prefix NOT LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
             if (nodeRow && nodeRow.prefix) {
                 let tgRegionStr = getTgNodeDisplay(nodeRow.prefix);
                 topNode = `${tgRegionStr}${formatDisplay(nodeRow.prefix, isMaskEnabled)} (共 <code>${nodeRow.c}</code> 次)`;
@@ -1510,10 +1511,10 @@ async function generateTgReport(env, ctx) {
             const favRow = await env.DB.prepare(`
                 SELECT REPLACE(prefix, '通用: ', '') as host, COUNT(*) as c
                 FROM visitor_logs 
-                WHERE datetime(timestamp) >= datetime('now', '-7 days') AND prefix LIKE '%通用%'
+                WHERE timestamp >= ? AND prefix LIKE '%通用%'
                 GROUP BY host
                 ORDER BY c DESC LIMIT 1
-            `).first();
+            `).bind(sevenDaysAgoStr).first();
             
             if (favRow && favRow.host) {
                 const sName = serverNamesMap[favRow.host];
@@ -1524,7 +1525,17 @@ async function generateTgReport(env, ctx) {
                 }
             }
 
-            const rReq = await env.DB.prepare("SELECT host, target, COUNT(*) as c FROM region_hits_v2 WHERE datetime(timestamp) >= datetime('now', '-24 hours') GROUP BY host, target ORDER BY host, c DESC").all();
+            // 【治愈强迫症】：动态幽灵记录抹杀！
+            // 这里加入了一个严格的 IN 条件，如果该域名在 visitor_logs 表里被你删了，它在负载里也绝对出不来！
+            const rReq = await env.DB.prepare(`
+                SELECT host, target, COUNT(*) as c 
+                FROM region_hits_v2 
+                WHERE timestamp LIKE ? 
+                  AND (target = '原生直接访问' OR target IN (SELECT REPLACE(prefix, '通用: ', '') FROM visitor_logs WHERE prefix LIKE '%通用%'))
+                GROUP BY host, target 
+                ORDER BY host, c DESC
+            `).bind(todayDateStr + '%').all();
+            
             if (rReq && rReq.results) {
                 rReq.results.forEach(r => {
                     if (!regionMap[r.host]) regionMap[r.host] = { total: 0, targets: [] };
@@ -1577,9 +1588,9 @@ async function generateTgReport(env, ctx) {
     }
 
     let msg = `📊 <b>Emby 全局播放数据统计报表</b>\n<i>🕒 统计时间: ${nowTimestamp}</i>\n\n`;
-    msg += `📈 <b>【 播放数据 (近24H) 】</b>\n├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n├ 🔗 通用反代: <code>${universalCount}</code> 次\n├ 🌍 访客来源最多: ${topUniLocation}\n└ 🔥 最热反代目标: ${topUniversalNode}\n\n`;
+    msg += `📈 <b>【 播放数据 (今日累计) 】</b>\n├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n├ 🔗 通用反代: <code>${universalCount}</code> 次\n├ 🌍 访客来源最多: ${topUniLocation}\n└ 🔥 最热反代目标: ${topUniversalNode}\n\n`;
     
-    msg += `📍 <b>【 地区节点负载 (近24H) 】</b>\n`;
+    msg += `📍 <b>【 地区节点负载 (今日累计) 】</b>\n`;
     const hosts = Object.keys(regionMap);
     if (hosts.length > 0) { 
         hosts.forEach((host, idx) => { 
@@ -1665,7 +1676,6 @@ export default {
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS visitor_logs (timestamp DATETIME, prefix TEXT, ip TEXT, country TEXT, ua TEXT)").run().catch(() => {});
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS emby_server_names (host TEXT PRIMARY KEY, server_name TEXT)").run().catch(() => {});
       
-      // 【核心性能优化】: 为频繁查询建立高速缓存索引，非阻塞执行，面板加载将变为秒开！
       if (ctx && ctx.waitUntil) {
           ctx.waitUntil((async () => {
               await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_vl_prefix_time ON visitor_logs(prefix, timestamp DESC)").run().catch(() => {});
@@ -1692,7 +1702,11 @@ export default {
       }
     });
 
-    if (decodedPath.toLowerCase().includes('/playbackinfo') && env.DB && ctx && ctx.waitUntil) {
+    const lowerPath = decodedPath.toLowerCase();
+    const isRealPlayAction = (lowerPath.includes('/playbackinfo') && request.method.toUpperCase() === 'POST') || 
+                             (lowerPath.includes('/sessions/playing') && !lowerPath.includes('progress') && !lowerPath.includes('stopped'));
+
+    if (isRealPlayAction && env.DB && ctx && ctx.waitUntil) {
         ctx.waitUntil((async () => {
           try {
             const timestamp = new Date(Date.now() + 8 * 3600000).toISOString().replace("T", " ").split(".")[0];
@@ -1702,18 +1716,56 @@ export default {
             if (isUniversal) {
                 try { proxyTarget = new URL(decodedPath.substring(1)).host; } catch(e) {}
             }
-            await env.DB.prepare("INSERT INTO region_hits_v2 (timestamp, host, target) VALUES (?, ?, ?)").bind(timestamp, currentHost, proxyTarget).run().catch(()=>{});
+            
+            const lastHit = await env.DB.prepare("SELECT timestamp FROM region_hits_v2 WHERE host = ? AND target = ? ORDER BY timestamp DESC LIMIT 1").bind(currentHost, proxyTarget).first();
+            let isHitDup = false;
+            if (lastHit && lastHit.timestamp) {
+                const lastMs = new Date(lastHit.timestamp.replace(" ", "T") + "+08:00").getTime();
+                if (Date.now() - lastMs < 60000) isHitDup = true;
+            }
+            if (!isHitDup) {
+                await env.DB.prepare("INSERT INTO region_hits_v2 (timestamp, host, target) VALUES (?, ?, ?)").bind(timestamp, currentHost, proxyTarget).run().catch(()=>{});
+            }
             
             if (isUniversal) {
               const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Real-IP") || "Unknown";
               const country = request.headers.get("CF-IPCountry") || "Unknown";
               const ua = request.headers.get("User-Agent") || "Unknown";
-              await env.DB.prepare("INSERT INTO visitor_logs (timestamp, prefix, ip, country, ua) VALUES (?, ?, ?, ?, ?)").bind(timestamp, "通用: " + proxyTarget, ip, country, ua).run();
+              const prefixStr = "通用: " + proxyTarget;
               
-              const nameCheck = await env.DB.prepare("SELECT server_name FROM emby_server_names WHERE host = ?").bind(proxyTarget).first().catch(()=>null);
-              if (!nameCheck || nameCheck.server_name === proxyTarget) {
-                  const sName = await fetchEmbyServerName(proxyTarget);
-                  await env.DB.prepare("INSERT INTO emby_server_names (host, server_name) VALUES (?, ?) ON CONFLICT(host) DO UPDATE SET server_name=excluded.server_name").bind(proxyTarget, sName).run().catch(()=>{});
+              const lastLog = await env.DB.prepare("SELECT timestamp, ua FROM visitor_logs WHERE ip = ? AND prefix = ? ORDER BY timestamp DESC LIMIT 1").bind(ip, prefixStr).first();
+              let isLogDup = false;
+              if (lastLog && lastLog.timestamp) {
+                  const lastMs = new Date(lastLog.timestamp.replace(" ", "T") + "+08:00").getTime();
+                  if (Date.now() - lastMs < 60000) {
+                      isLogDup = true;
+                      
+                      let finalUa = ua;
+                      let newUaLower = (ua || "").toLowerCase();
+                      let oldUaLower = (lastLog.ua || "").toLowerCase();
+                      let newIsJunk = newUaLower.includes('cfnetwork') || newUaLower.includes('stagefright') || newUaLower.includes('dalvik');
+                      let oldIsJunk = oldUaLower.includes('cfnetwork') || oldUaLower.includes('stagefright') || oldUaLower.includes('dalvik');
+                      
+                      if (newIsJunk && !oldIsJunk) {
+                          finalUa = lastLog.ua; 
+                      } else if (!newIsJunk && oldIsJunk) {
+                          finalUa = ua; 
+                      } else {
+                          finalUa = (ua.length >= (lastLog.ua || "").length) ? ua : lastLog.ua; 
+                      }
+
+                      await env.DB.prepare("UPDATE visitor_logs SET ua = ?, timestamp = ? WHERE ip = ? AND prefix = ? AND timestamp = ?").bind(finalUa, timestamp, ip, prefixStr, lastLog.timestamp).run().catch(()=>{});
+                  }
+              }
+              
+              if (!isLogDup) {
+                  await env.DB.prepare("INSERT INTO visitor_logs (timestamp, prefix, ip, country, ua) VALUES (?, ?, ?, ?, ?)").bind(timestamp, prefixStr, ip, country, ua).run().catch(()=>{});
+                  
+                  const nameCheck = await env.DB.prepare("SELECT server_name FROM emby_server_names WHERE host = ?").bind(proxyTarget).first().catch(()=>null);
+                  if (!nameCheck || nameCheck.server_name === proxyTarget) {
+                      const sName = await fetchEmbyServerName(proxyTarget);
+                      await env.DB.prepare("INSERT INTO emby_server_names (host, server_name) VALUES (?, ?) ON CONFLICT(host) DO UPDATE SET server_name=excluded.server_name").bind(proxyTarget, sName).run().catch(()=>{});
+                  }
               }
             }
           } catch (err) {}
@@ -1748,7 +1800,6 @@ export default {
     if (url.pathname === "/api/get-universal" && request.method === "GET") {
         if (!env.DB) return Response.json({ success: false, data: [] });
         try {
-            // 得益于新增加的索引，这个复杂查询的速度将飙升
             const { results } = await env.DB.prepare(`
                 SELECT v1.prefix, 
                        MAX(v1.timestamp) as lastActive, 
@@ -1773,6 +1824,7 @@ export default {
             if (body.prefix) {
                 await env.DB.prepare("DELETE FROM visitor_logs WHERE prefix = ?").bind(body.prefix).run();
                 const pureHost = body.prefix.replace('通用: ', '').trim();
+                await env.DB.prepare("DELETE FROM region_hits_v2 WHERE target = ?").bind(pureHost).run().catch(()=>{});
                 await env.DB.prepare("DELETE FROM emby_server_names WHERE host = ?").bind(pureHost).run().catch(()=>{});
             }
             return Response.json({ success: true });
