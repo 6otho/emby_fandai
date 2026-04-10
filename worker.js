@@ -1357,7 +1357,7 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极满血版：动态幽灵记录抹杀(面板删除TG即刻消失) + 60秒智能去重 + 每日清零 + 免打码服名 + 极致脱敏复制
+// 终极满血版：积木化报表拆分(/mini, /logs) + 动态日志开关 + 彻底级联删除 + 60秒智能去重
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1430,7 +1430,8 @@ async function fetchEmbyServerName(host) {
     return host;
 }
 
-async function generateTgReport(env, ctx) {
+// 核心改造：引入 opts 参数以支持报告按需拆分
+async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: false }) {
     let todayCount = 0, universalCount = 0, topUniversalNode = "无记录", topUniLocation = "无记录", topLocation = "无记录", topNode = "无记录", favEmby = "无记录", recentLogs = [];
     let regionMap = {};
     let dbRegions = {}; 
@@ -1453,112 +1454,101 @@ async function generateTgReport(env, ctx) {
             const namesReq = await env.DB.prepare("SELECT host, server_name FROM emby_server_names").all();
             if (namesReq && namesReq.results) namesReq.results.forEach(r => serverNamesMap[r.host] = r.server_name);
 
-            const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE timestamp LIKE ?").bind(todayDateStr + '%').first();
-            if (todayRow) todayCount = todayRow.c;
-            
-            const uniRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE timestamp LIKE ? AND prefix LIKE '%通用%'").bind(todayDateStr + '%').first();
-            if (uniRow) universalCount = uniRow.c;
-            
-            const topUniLocRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? AND prefix LIKE '%通用%' GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
-            if (topUniLocRow && topUniLocRow.country) topUniLocation = `${getFlagEmoji(topUniLocRow.country)} <b>${topUniLocRow.country}</b> (共 <code>${topUniLocRow.c}</code> 次)`;
-            
-            function getTgNodeDisplay(host) {
-                let rInfo = parseCloudRegion(host);
-                if (rInfo.name !== '未知') return `${rInfo.icon} ${rInfo.short} `;
-                let dbReg = dbRegions[host];
-                if (dbReg) {
-                    if (dbReg.includes('香港')) return '🇭🇰 HK ';
-                    if (dbReg.includes('新加坡')) return '🇸🇬 SG ';
-                    if (dbReg.includes('台湾')) return '🇹🇼 TW ';
-                    if (dbReg.includes('日本')) return '🇯🇵 JP ';
-                    if (dbReg.includes('韩国')) return '🇰🇷 KR ';
-                    if (dbReg.includes('澳洲')) return '🇦🇺 AU ';
-                    if (dbReg.includes('英国')) return '🇬🇧 UK ';
-                    if (dbReg.includes('德国')) return '🇩🇪 DE ';
-                    if (dbReg.includes('美国')) return '🇺🇸 US ';
-                    if (dbReg.includes('加拿大')) return '🇨🇦 CA ';
-                    const match = dbReg.match(/^([\uD800-\uDBFF][\uDC00-\uDFFF])/);
-                    if (match) return match[1] + ' ';
-                }
-                return `🌐 `;
-            }
-
-            function getDisplayName(host, maskEnabled) {
-                if (!host) return "Unknown";
-                const sName = serverNamesMap[host];
-                if (sName && !sName.includes('.')) {
-                    return `<b>${sName}</b>`; 
-                }
-                return formatDisplay(host, maskEnabled);
-            }
-
-            const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE timestamp LIKE ? AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").bind(todayDateStr + '%').first();
-            if (topUniRow && topUniRow.prefix) {
-                let cleanHost = topUniRow.prefix.replace('通用:', '').replace('通用: ', '').trim();
-                let tgRegionStr = getTgNodeDisplay(cleanHost);
-                topUniversalNode = `${tgRegionStr}${getDisplayName(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
-            }
-
-            const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
-            if (locRow && locRow.country) topLocation = `${getFlagEmoji(locRow.country)} <b>${locRow.country}</b> (共 <code>${locRow.c}</code> 次)`;
-            
-            const nodeRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? AND prefix NOT LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
-            if (nodeRow && nodeRow.prefix) {
-                let tgRegionStr = getTgNodeDisplay(nodeRow.prefix);
-                topNode = `${tgRegionStr}${formatDisplay(nodeRow.prefix, isMaskEnabled)} (共 <code>${nodeRow.c}</code> 次)`;
-            }
-
-            const favRow = await env.DB.prepare(`
-                SELECT REPLACE(prefix, '通用: ', '') as host, COUNT(*) as c
-                FROM visitor_logs 
-                WHERE timestamp >= ? AND prefix LIKE '%通用%'
-                GROUP BY host
-                ORDER BY c DESC LIMIT 1
-            `).bind(sevenDaysAgoStr).first();
-            
-            if (favRow && favRow.host) {
-                const sName = serverNamesMap[favRow.host];
-                if (sName && !sName.includes('.')) {
-                    favEmby = `<b>${sName}</b> (共 <code>${favRow.c}</code> 次)`;
-                } else {
-                    favEmby = `${formatDisplay(favRow.host, isMaskEnabled)} <i style="color:gray;">(未设置服名)</i> (共 <code>${favRow.c}</code> 次)`;
-                }
-            }
-
-            // 【治愈强迫症】：动态幽灵记录抹杀！
-            // 这里加入了一个严格的 IN 条件，如果该域名在 visitor_logs 表里被你删了，它在负载里也绝对出不来！
-            const rReq = await env.DB.prepare(`
-                SELECT host, target, COUNT(*) as c 
-                FROM region_hits_v2 
-                WHERE timestamp LIKE ? 
-                  AND (target = '原生直接访问' OR target IN (SELECT REPLACE(prefix, '通用: ', '') FROM visitor_logs WHERE prefix LIKE '%通用%'))
-                GROUP BY host, target 
-                ORDER BY host, c DESC
-            `).bind(todayDateStr + '%').all();
-            
-            if (rReq && rReq.results) {
-                rReq.results.forEach(r => {
-                    if (!regionMap[r.host]) regionMap[r.host] = { total: 0, targets: [] };
-                    regionMap[r.host].total += r.c;
-                    regionMap[r.host].targets.push({ target: r.target, c: r.c });
-                });
-            }
-
+            // 获取最新播放记录
             const logsReq = await env.DB.prepare("SELECT timestamp, prefix, ip, country, ua FROM visitor_logs ORDER BY timestamp DESC LIMIT 5").all();
             if (logsReq && logsReq.results) recentLogs = logsReq.results;
+
+            if (!opts.onlyLogs) {
+                const todayRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE timestamp LIKE ?").bind(todayDateStr + '%').first();
+                if (todayRow) todayCount = todayRow.c;
+                
+                const uniRow = await env.DB.prepare("SELECT count(*) as c FROM visitor_logs WHERE timestamp LIKE ? AND prefix LIKE '%通用%'").bind(todayDateStr + '%').first();
+                if (uniRow) universalCount = uniRow.c;
+                
+                const topUniLocRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? AND prefix LIKE '%通用%' GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
+                if (topUniLocRow && topUniLocRow.country) topUniLocation = `${getFlagEmoji(topUniLocRow.country)} <b>${topUniLocRow.country}</b> (共 <code>${topUniLocRow.c}</code> 次)`;
+                
+                function getTgNodeDisplay(host) {
+                    let rInfo = parseCloudRegion(host);
+                    if (rInfo.name !== '未知') return `${rInfo.icon} ${rInfo.short} `;
+                    let dbReg = dbRegions[host];
+                    if (dbReg) {
+                        if (dbReg.includes('香港')) return '🇭🇰 HK ';
+                        if (dbReg.includes('新加坡')) return '🇸🇬 SG ';
+                        if (dbReg.includes('台湾')) return '🇹🇼 TW ';
+                        if (dbReg.includes('日本')) return '🇯🇵 JP ';
+                        if (dbReg.includes('韩国')) return '🇰🇷 KR ';
+                        if (dbReg.includes('澳洲')) return '🇦🇺 AU ';
+                        if (dbReg.includes('英国')) return '🇬🇧 UK ';
+                        if (dbReg.includes('德国')) return '🇩🇪 DE ';
+                        if (dbReg.includes('美国')) return '🇺🇸 US ';
+                        if (dbReg.includes('加拿大')) return '🇨🇦 CA ';
+                        const match = dbReg.match(/^([\uD800-\uDBFF][\uDC00-\uDFFF])/);
+                        if (match) return match[1] + ' ';
+                    }
+                    return `🌐 `;
+                }
+
+                function getDisplayName(host, maskEnabled) {
+                    if (!host) return "Unknown";
+                    const sName = serverNamesMap[host];
+                    if (sName && !sName.includes('.')) return `<b>${sName}</b>`; 
+                    return formatDisplay(host, maskEnabled);
+                }
+
+                const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE timestamp LIKE ? AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").bind(todayDateStr + '%').first();
+                if (topUniRow && topUniRow.prefix) {
+                    let cleanHost = topUniRow.prefix.replace('通用:', '').replace('通用: ', '').trim();
+                    let tgRegionStr = getTgNodeDisplay(cleanHost);
+                    topUniversalNode = `${tgRegionStr}${getDisplayName(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
+                }
+
+                const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
+                if (locRow && locRow.country) topLocation = `${getFlagEmoji(locRow.country)} <b>${locRow.country}</b> (共 <code>${locRow.c}</code> 次)`;
+                
+                const nodeRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? AND prefix NOT LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
+                if (nodeRow && nodeRow.prefix) {
+                    let tgRegionStr = getTgNodeDisplay(nodeRow.prefix);
+                    topNode = `${tgRegionStr}${formatDisplay(nodeRow.prefix, isMaskEnabled)} (共 <code>${nodeRow.c}</code> 次)`;
+                }
+
+                const favRow = await env.DB.prepare(`
+                    SELECT REPLACE(prefix, '通用: ', '') as host, COUNT(*) as c
+                    FROM visitor_logs 
+                    WHERE timestamp >= ? AND prefix LIKE '%通用%'
+                    GROUP BY host
+                    ORDER BY c DESC LIMIT 1
+                `).bind(sevenDaysAgoStr).first();
+                
+                if (favRow && favRow.host) {
+                    const sName = serverNamesMap[favRow.host];
+                    if (sName && !sName.includes('.')) {
+                        favEmby = `<b>${sName}</b> (共 <code>${favRow.c}</code> 次)`;
+                    } else {
+                        favEmby = `${formatDisplay(favRow.host, isMaskEnabled)} <i style="color:gray;">(未设置服名)</i> (共 <code>${favRow.c}</code> 次)`;
+                    }
+                }
+
+                const rReq = await env.DB.prepare(`
+                    SELECT host, target, COUNT(*) as c 
+                    FROM region_hits_v2 
+                    WHERE timestamp LIKE ? 
+                      AND (target = '原生直接访问' OR target IN (SELECT REPLACE(prefix, '通用: ', '') FROM visitor_logs WHERE prefix LIKE '%通用%'))
+                    GROUP BY host, target 
+                    ORDER BY host, c DESC
+                `).bind(todayDateStr + '%').all();
+                
+                if (rReq && rReq.results) {
+                    rReq.results.forEach(r => {
+                        if (!regionMap[r.host]) regionMap[r.host] = { total: 0, targets: [] };
+                        regionMap[r.host].total += r.c;
+                        regionMap[r.host].targets.push({ target: r.target, c: r.c });
+                    });
+                }
+            }
         } catch (e) {}
     }
     
-    let t24 = "未知", t7 = "未知", t30 = "未知";
-    try {
-        const mockReq = new Request("https://localhost/api/analytics", { method: "GET", headers: { "Cookie": `admin_token=${env.ADMIN_TOKEN}` } });
-        const mockRes = await originalWorker.fetch(mockReq, env, ctx);
-        if (mockRes.ok) {
-            const data = await mockRes.json();
-            if (data.success) { t24 = data.traffic24h || t24; t7 = data.traffic7d || t7; t30 = data.traffic30d || t30; }
-        }
-    } catch(e) {}
-
     function safeGetTgNodeDisplay(host) {
         let rInfo = parseCloudRegion(host);
         if (rInfo.name !== '未知') return `${rInfo.icon} ${rInfo.short} `;
@@ -1586,6 +1576,37 @@ async function generateTgReport(env, ctx) {
         if (sName && !sName.includes('.')) return `<b>${sName}</b>`; 
         return formatDisplay(host, maskEnabled);
     }
+
+    // 模式1：只请求纯净日志 (/logs)
+    if (opts.onlyLogs) {
+        let msg = `📜 <b>【 最近 5 次播放记录 】</b>\n<i>🕒 拉取时间: ${nowTimestamp}</i>`;
+        if (recentLogs.length > 0) {
+            recentLogs.forEach((log) => { 
+                let rawPrefix = log.prefix || 'Unknown';
+                let isUni = rawPrefix.includes('通用:');
+                let cleanHost = rawPrefix.replace('通用:', '').replace('通用: ', '').trim();
+                let targetType = isUni ? '🔗 反代至' : '🎯 目标';
+                let tgRegionStr = safeGetTgNodeDisplay(cleanHost);
+                let dispName = isUni ? safeGetDisplayName(cleanHost, isMaskEnabled) : formatDisplay(cleanHost, isMaskEnabled);
+
+                msg += `\n\n▶️ <b>时间</b>: ${log.timestamp || '刚刚'}\n├ 📌 <b>${targetType}</b>: ${tgRegionStr}${dispName}\n├ 🌍 <b>访客地区</b>: ${getFlagEmoji(log.country)} ${log.country}\n├ 🌐 <b>访客 IP</b>: ${formatDisplay(log.ip, isMaskEnabled, true)}\n└ 📱 <b>设备</b>: <code>${log.ua || 'Unknown'}</code>`; 
+            });
+        } else {
+            msg += `\n\n暂无近期播放记录。`;
+        }
+        return msg;
+    }
+
+    // 模式2：常规统计报表
+    let t24 = "未知", t7 = "未知", t30 = "未知";
+    try {
+        const mockReq = new Request("https://localhost/api/analytics", { method: "GET", headers: { "Cookie": `admin_token=${env.ADMIN_TOKEN}` } });
+        const mockRes = await originalWorker.fetch(mockReq, env, ctx);
+        if (mockRes.ok) {
+            const data = await mockRes.json();
+            if (data.success) { t24 = data.traffic24h || t24; t7 = data.traffic7d || t7; t30 = data.traffic30d || t30; }
+        }
+    } catch(e) {}
 
     let msg = `📊 <b>Emby 全局播放数据统计报表</b>\n<i>🕒 统计时间: ${nowTimestamp}</i>\n\n`;
     msg += `📈 <b>【 播放数据 (今日累计) 】</b>\n├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n├ 🔗 通用反代: <code>${universalCount}</code> 次\n├ 🌍 访客来源最多: ${topUniLocation}\n└ 🔥 最热反代目标: ${topUniversalNode}\n\n`;
@@ -1621,7 +1642,8 @@ async function generateTgReport(env, ctx) {
     msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 访客来源最多: ${topLocation}\n├ 🎬 最喜欢的EMBY: ${favEmby}\n└ 🚀 最热线路节点: ${topNode}\n\n`;
     msg += `🌐 <b>【 主域名流量消耗 】</b>\n├ ⏳ 近 24 小时内: <code>${t24}</code>\n├ 📅 近  7  天内: <code>${t7}</code>\n└ 🗓 近 30 天内: <code>${t30}</code>\n`;
     
-    if (recentLogs.length > 0) {
+    // 如果启用了日志选项，才把日志拼在最下面
+    if (opts.includeLogs && recentLogs.length > 0) {
         msg += `\n📜 <b>【 最近 ${recentLogs.length} 次播放记录 】</b>`;
         recentLogs.forEach((log) => { 
             let rawPrefix = log.prefix || 'Unknown';
@@ -1629,7 +1651,6 @@ async function generateTgReport(env, ctx) {
             let cleanHost = rawPrefix.replace('通用:', '').replace('通用: ', '').trim();
             let targetType = isUni ? '🔗 反代至' : '🎯 目标';
             let tgRegionStr = safeGetTgNodeDisplay(cleanHost);
-            
             let dispName = isUni ? safeGetDisplayName(cleanHost, isMaskEnabled) : formatDisplay(cleanHost, isMaskEnabled);
 
             msg += `\n\n▶️ <b>时间</b>: ${log.timestamp || '刚刚'}\n├ 📌 <b>${targetType}</b>: ${tgRegionStr}${dispName}\n├ 🌍 <b>访客地区</b>: ${getFlagEmoji(log.country)} ${log.country}\n├ 🌐 <b>访客 IP</b>: ${formatDisplay(log.ip, isMaskEnabled, true)}\n└ 📱 <b>设备</b>: <code>${log.ua || 'Unknown'}</code>`; 
@@ -1641,6 +1662,7 @@ async function generateTgReport(env, ctx) {
 export default {
   async scheduled(event, env, ctx) {
     let dbTgToken = null, dbTgChatId = null;
+    let includeLogs = true; // 默认发送日志
     if (env.DB) {
       try {
         await env.DB.prepare("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)").run().catch(() => {});
@@ -1648,17 +1670,25 @@ export default {
         const lastRunRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'LAST_CRON_TIME'").first();
         if (lastRunRow && (nowMs - parseInt(lastRunRow.value)) < 5 * 60 * 1000) return; 
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('LAST_CRON_TIME', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(nowMs.toString()).run();
+        
         const tokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_BOT_TOKEN'").first();
         const chatRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_CHAT_ID'").first();
+        const logRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_LOGS_ENABLED'").first();
+        
         if (tokenRow) dbTgToken = tokenRow.value;
         if (chatRow) dbTgChatId = chatRow.value;
+        if (logRow && logRow.value === 'false') includeLogs = false; // 根据面板开关决定是否在定时推送中加日志
       } catch (e) {}
     }
     const token = dbTgToken || env.TG_BOT_TOKEN;
     const chatId = dbTgChatId || env.TG_CHAT_ID;
     if (token && chatId) {
         ctx.waitUntil((async () => {
-            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: await generateTgReport(env, ctx), parse_mode: "HTML" }) });
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { 
+                method: "POST", 
+                headers: { "Content-Type": "application/json" }, 
+                body: JSON.stringify({ chat_id: chatId, text: await generateTgReport(env, ctx, { includeLogs, onlyLogs: false }), parse_mode: "HTML" }) 
+            });
         })());
     }
   },
@@ -1743,8 +1773,8 @@ export default {
                       let finalUa = ua;
                       let newUaLower = (ua || "").toLowerCase();
                       let oldUaLower = (lastLog.ua || "").toLowerCase();
-                      let newIsJunk = newUaLower.includes('cfnetwork') || newUaLower.includes('stagefright') || newUaLower.includes('dalvik');
-                      let oldIsJunk = oldUaLower.includes('cfnetwork') || oldUaLower.includes('stagefright') || oldUaLower.includes('dalvik');
+                      let newIsJunk = newUaLower.includes('cfnetwork') || newUaLower.includes('stagefright') || newUaLower.includes('dalvik') || newUaLower.includes('okhttp');
+                      let oldIsJunk = oldUaLower.includes('cfnetwork') || oldUaLower.includes('stagefright') || oldUaLower.includes('dalvik') || oldUaLower.includes('okhttp');
                       
                       if (newIsJunk && !oldIsJunk) {
                           finalUa = lastLog.ua; 
@@ -1776,14 +1806,39 @@ export default {
       try {
         const clonedReq = request.clone();
         const body = await clonedReq.json();
-        if (body?.message?.text && (body.message.text === "/stats" || body.message.text.startsWith("/stats@"))) {
-            const token = dbTgToken || env.TG_BOT_TOKEN;
-            if (token) {
-                ctx.waitUntil((async () => {
-                    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: body.message.chat.id, text: await generateTgReport(env, ctx), parse_mode: "HTML" }) });
-                })());
+        const text = body?.message?.text;
+        
+        if (text) {
+            let isStats = text === "/stats" || text.startsWith("/stats@");
+            let isMini = text === "/mini" || text.startsWith("/mini@");
+            let isLogs = text === "/logs" || text.startsWith("/logs@");
+
+            if (isStats || isMini || isLogs) {
+                let defaultIncludeLogs = true;
+                if (env.DB) {
+                    try {
+                        const logRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_LOGS_ENABLED'").first();
+                        if (logRow && logRow.value === 'false') defaultIncludeLogs = false;
+                    } catch(e) {}
+                }
+
+                // 三大指令路由核心控制
+                let reportOpts = { includeLogs: defaultIncludeLogs, onlyLogs: false };
+                if (isMini) reportOpts = { includeLogs: false, onlyLogs: false };
+                if (isLogs) reportOpts = { includeLogs: true, onlyLogs: true };
+
+                const token = dbTgToken || env.TG_BOT_TOKEN;
+                if (token) {
+                    ctx.waitUntil((async () => {
+                        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { 
+                            method: "POST", 
+                            headers: { "Content-Type": "application/json" }, 
+                            body: JSON.stringify({ chat_id: body.message.chat.id, text: await generateTgReport(env, ctx, reportOpts), parse_mode: "HTML" }) 
+                        });
+                    })());
+                }
+                return new Response("OK");
             }
-            return new Response("OK");
         }
       } catch (e) {}
     }
@@ -1844,14 +1899,16 @@ export default {
     }
 
     if (url.pathname === "/api/get-tg" && request.method === "GET") {
-        let maskEnabled = 'true';
+        let maskEnabled = 'true', logsEnabled = 'true';
         if (env.DB) {
             try {
                 const maskRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_MASK_ENABLED'").first();
                 if (maskRow && maskRow.value === 'false') maskEnabled = 'false';
+                const logRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_LOGS_ENABLED'").first();
+                if (logRow && logRow.value === 'false') logsEnabled = 'false';
             } catch(e) {}
         }
-        return Response.json({ success: true, token: dbTgToken || "", chatId: dbTgChatId || "", maskEnabled: maskEnabled === 'true' });
+        return Response.json({ success: true, token: dbTgToken || "", chatId: dbTgChatId || "", maskEnabled: maskEnabled === 'true', logsEnabled: logsEnabled === 'true' });
     }
 
     if (url.pathname === "/api/save-tg" && request.method === "POST") {
@@ -1861,6 +1918,7 @@ export default {
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_BOT_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.token || "").run();
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_CHAT_ID', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.chatId || "").run();
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_MASK_ENABLED', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.maskEnabled ? 'true' : 'false').run();
+        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_LOGS_ENABLED', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.logsEnabled ? 'true' : 'false').run();
         return Response.json({ success: true });
       } catch (e) { return Response.json({ success: false, error: e.message }); }
     }
@@ -1871,7 +1929,12 @@ export default {
         const token = data.token || dbTgToken || env.TG_BOT_TOKEN;
         const chatId = data.chatId || dbTgChatId || env.TG_CHAT_ID;
         if (!token || !chatId) return Response.json({ success: false, error: "未配置" });
-        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: "🚀 <b>面板连通性测试成功！</b>\n\n" + await generateTgReport(env, ctx), parse_mode: "HTML" }) });
+        
+        // 测试报表根据面板传入的开关状态动态生成
+        const opts = { includeLogs: data.logsEnabled !== false, onlyLogs: false };
+        const reportText = await generateTgReport(env, ctx, opts);
+
+        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: "🚀 <b>面板连通性测试成功！</b>\n\n" + reportText, parse_mode: "HTML" }) });
         const tgData = await tgRes.json();
         if (!tgData.ok) throw new Error(tgData.description);
         return Response.json({ success: true });
@@ -2015,10 +2078,19 @@ export default {
                                   <input type="checkbox" id="tgMaskToggle" class="toggle-switch" checked>
                                   <label for="tgMaskToggle" style="cursor:pointer; user-select:none; line-height:1.4;">开启数据脱敏 (开启后自动隐藏访客IP和未备注的域名)</label>
                               </div>
+                              
+                              <!-- 新增日志拆分开关 -->
+                              <div style="display:flex; align-items:center; color:var(--text); font-size:14px;">
+                                  <input type="checkbox" id="tgLogsToggle" class="toggle-switch" checked>
+                                  <label for="tgLogsToggle" style="cursor:pointer; user-select:none; line-height:1.4;">附加最近 5 次播放记录 (关闭后定时推送将变得极简小巧)</label>
+                              </div>
 
-                              <div style="display:flex; gap:10px;">
+                              <div style="display:flex; gap:10px; margin-top: 4px;">
                                   <button onclick="saveTgSettings()" class="btn-edit" style="flex:1;">💾 保存配置</button>
                                   <button onclick="testTgMessage()" class="btn-edit" style="flex:1; background:rgba(52,199,89,0.1); color:#34c759;">📊 发送测试报表</button>
+                              </div>
+                              <div style="font-size: 12px; color: var(--text-sec); line-height: 1.5; margin-top: 2px;">
+                                  * TG 新增三大专属查岗指令：<b>/stats</b> (默认报表)、<b>/mini</b> (无日志极简报表)、<b>/logs</b> (纯净最近记录)。
                               </div>
                           </div>
                       </div>
@@ -2048,6 +2120,7 @@ export default {
                               if(d.token) document.getElementById('tgToken').value = d.token;
                               if(d.chatId) document.getElementById('tgChatId').value = d.chatId;
                               document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
+                              document.getElementById('tgLogsToggle').checked = d.logsEnabled !== false;
                           }
                       }).catch(e => {});
 
@@ -2170,8 +2243,9 @@ export default {
               const token = document.getElementById('tgToken').value.trim();
               const chatId = document.getElementById('tgChatId').value.trim();
               const maskEnabled = document.getElementById('tgMaskToggle').checked;
+              const logsEnabled = document.getElementById('tgLogsToggle').checked;
               try {
-                  const res = await fetch('/api/save-tg', { method: 'POST', body: JSON.stringify({ token, chatId, maskEnabled }) });
+                  const res = await fetch('/api/save-tg', { method: 'POST', body: JSON.stringify({ token, chatId, maskEnabled, logsEnabled }) });
                   const d = await res.json();
                   if(d.success) (typeof showToast === 'function' ? showToast : alert)('✅ 保存成功');
               } catch(e) {}
@@ -2180,8 +2254,9 @@ export default {
           window.testTgMessage = async function() {
               const token = document.getElementById('tgToken').value.trim();
               const chatId = document.getElementById('tgChatId').value.trim();
+              const logsEnabled = document.getElementById('tgLogsToggle').checked;
               try {
-                  const res = await fetch('/api/test-tg', { method: 'POST', body: JSON.stringify({ token, chatId }) });
+                  const res = await fetch('/api/test-tg', { method: 'POST', body: JSON.stringify({ token, chatId, logsEnabled }) });
                   const d = await res.json();
                   if(d.success) (typeof showToast === 'function' ? showToast : alert)('✅ 发送成功，请查看 TG');
               } catch(e) {}
