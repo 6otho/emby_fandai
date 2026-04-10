@@ -1358,9 +1358,8 @@ const originalWorker = {
 };
 // ==========================================
 // 终极满血版：完美适配截图配置 + 100%像素级还原官方 Settings 接口（彻底告别所有报错）
-// 终极修复：
-// 1. 使用 Blob + application/json 完美解决 10201 / 10001 格式报错
-// 2. 破解原作者的绕过机制：使用 region 替代 hint，完美绕过 10023 企业版限制报错
+// UI 极致优化：独立防卡死原生弹窗 + 完美 1:1 复刻 iOS 风格圆角防误触眼睛 + 智能 UA 记忆净化
+// 核心破解：完美运用 region 隐藏参数真实调度机房，且彻底绕过 10023 限制
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1736,26 +1735,28 @@ export default {
             if (isUniversal) {
               const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Real-IP") || "Unknown";
               const country = request.headers.get("CF-IPCountry") || "Unknown";
-              const ua = request.headers.get("User-Agent") || "Unknown";
+              let ua = request.headers.get("User-Agent") || "Unknown";
               const prefixStr = "通用: " + proxyTarget;
+              
+              // =====================================
+              // 🚀 终极破解 UA：智能记忆设备的好名字，过滤 CFNetwork 等拉流垃圾名
+              // =====================================
+              let isJunkUa = /cfnetwork|darwin|stagefright|exoplayer|okhttp|lavf/i.test(ua);
+              if (isJunkUa) {
+                  const knownGood = await env.DB.prepare("SELECT ua FROM visitor_logs WHERE ip = ? AND ua NOT LIKE '%CFNetwork%' AND ua NOT LIKE '%Darwin%' AND ua NOT LIKE '%stagefright%' AND ua NOT LIKE '%ExoPlayer%' ORDER BY timestamp DESC LIMIT 1").bind(ip).first();
+                  if (knownGood && knownGood.ua) {
+                      ua = knownGood.ua; 
+                  }
+              }
               
               const lastLog = await env.DB.prepare("SELECT timestamp, ua FROM visitor_logs WHERE ip = ? AND prefix = ? ORDER BY timestamp DESC LIMIT 1").bind(ip, prefixStr).first();
               let isLogDup = false;
+              
               if (lastLog && lastLog.timestamp) {
                   const lastMs = new Date(lastLog.timestamp.replace(" ", "T") + "+08:00").getTime();
                   if (Date.now() - lastMs < 60000) {
                       isLogDup = true;
-                      let finalUa = ua;
-                      let newUaLower = (ua || "").toLowerCase();
-                      let oldUaLower = (lastLog.ua || "").toLowerCase();
-                      let newIsJunk = newUaLower.includes('cfnetwork') || newUaLower.includes('stagefright') || newUaLower.includes('dalvik') || newUaLower.includes('okhttp');
-                      let oldIsJunk = oldUaLower.includes('cfnetwork') || oldUaLower.includes('stagefright') || oldUaLower.includes('dalvik') || oldUaLower.includes('okhttp');
-                      
-                      if (newIsJunk && !oldIsJunk) finalUa = lastLog.ua; 
-                      else if (!newIsJunk && oldIsJunk) finalUa = ua; 
-                      else finalUa = (ua.length >= (lastLog.ua || "").length) ? ua : lastLog.ua; 
-
-                      await env.DB.prepare("UPDATE visitor_logs SET ua = ?, timestamp = ? WHERE ip = ? AND prefix = ? AND timestamp = ?").bind(finalUa, timestamp, ip, prefixStr, lastLog.timestamp).run().catch(()=>{});
+                      await env.DB.prepare("UPDATE visitor_logs SET ua = ?, timestamp = ? WHERE ip = ? AND prefix = ? AND timestamp = ?").bind(ua, timestamp, ip, prefixStr, lastLog.timestamp).run().catch(()=>{});
                   }
               }
               
@@ -1819,10 +1820,7 @@ export default {
                     let pRegion = parts[2].toLowerCase();
                     let modeData = {};
                     
-                    // =====================================
-                    // 🚀 终极破解：原作者绕过 10023 的绝妙方法！
-                    // 不要传 mode:'smart' 和 hint，直接传 region，欺骗 CF API
-                    // =====================================
+                    // 同样使用 region 欺骗 CF API
                     if (pMode === 'aws' || pMode === 'gcp' || pMode === 'azure') {
                         modeData = { region: `${pMode}:${pRegion}` };
                     } else if (pMode === 'edge') {
@@ -1835,10 +1833,6 @@ export default {
                         try {
                             const creds = await getCfCredentials(env);
                             
-                            // =====================================
-                            // 🚀 终极破解：严格使用 FormData + Blob 的二进制流上传
-                            // 解决 10001 和 10201 格式报错
-                            // =====================================
                             const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${creds.accId}/workers/scripts/${creds.wName}/settings`;
 
                             const formData = new FormData();
@@ -1850,7 +1844,6 @@ export default {
                                 method: "PATCH",
                                 headers: { 
                                     "Authorization": `Bearer ${creds.cfToken}`
-                                    // 绝对不要手动写 Content-Type，让 fetch 自动生成包含 boundary 的 multipart/form-data
                                 },
                                 body: formData
                             });
@@ -1920,9 +1913,6 @@ export default {
             const body = await request.json();
             const creds = await getCfCredentials(env);
             
-            // =====================================
-            // 🚀 Web 端同样使用 Blob 二进制流上传
-            // =====================================
             const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${creds.accId}/workers/scripts/${creds.wName}/settings`;
 
             const formData = new FormData();
@@ -2070,13 +2060,67 @@ export default {
               
               .cf-select { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 14px; cursor: pointer; outline: none; box-sizing: border-box; }
               
-              .svg-icon-btn { display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text); opacity: 0.6; transition: opacity 0.2s; user-select: none; }
-              .svg-icon-btn:hover { opacity: 1; }
+              /* 1:1复刻 iOS 风格防误触小方框高级眼 */
+              .svg-icon-btn { 
+                  display: flex; align-items: center; justify-content: center; 
+                  cursor: pointer; user-select: none; 
+                  width: 26px; height: 26px; 
+                  background: var(--card); 
+                  border: 1px solid var(--border); 
+                  border-radius: 8px;
+                  transition: all 0.2s ease;
+                  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+                  z-index: 10;
+              }
+              .svg-icon-btn:hover { filter: brightness(0.95); box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+              .eye-icon.active { color: var(--primary); background: rgba(0, 122, 255, 0.08); border-color: rgba(0, 122, 255, 0.3); }
+              .eye-icon.inactive { color: var(--text); opacity: 0.85; } 
+              
+              /* 修复并美化原生 Toast，绝对不会卡在半路 */
+              #custom-cf-toast {
+                  position: fixed;
+                  top: -60px;
+                  left: 50%;
+                  transform: translateX(-50%);
+                  background: rgba(0, 0, 0, 0.85);
+                  color: #fff;
+                  padding: 12px 24px;
+                  border-radius: 30px;
+                  font-size: 14px;
+                  font-weight: 600;
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+                  z-index: 999999;
+                  opacity: 0;
+                  pointer-events: none;
+                  transition: all 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+                  white-space: nowrap;
+                  backdrop-filter: blur(10px);
+                  border: 1px solid rgba(255,255,255,0.1);
+              }
+              #custom-cf-toast.show {
+                  opacity: 1;
+                  top: 25px;
+              }
           </style>
           <script>
-          // 纯净高级 SVG 眼睛图标
-          const SVG_EYE_OPEN = \`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>\`;
-          const SVG_EYE_CLOSED = \`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>\`;
+          // 纯黑白三层实心眼睛图标（眼眶+白眼珠+黑瞳孔） 1:1复刻截图
+          const SVG_EYE = \`<svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 4C5.5 4 1 12 1 12s4.5 8 11 8 11-8 11-8-4.5-8-11-8z" fill="currentColor"/><circle cx="12" cy="12" r="4.5" fill="#ffffff"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg>\`;
+
+          // 原生独立防卡死 Toast 弹窗
+          window.showCfToast = function(msg) {
+              let t = document.getElementById('custom-cf-toast');
+              if(!t) {
+                  t = document.createElement('div');
+                  t.id = 'custom-cf-toast';
+                  document.body.appendChild(t);
+              }
+              t.textContent = msg;
+              t.classList.remove('show');
+              void t.offsetWidth; // 触发重绘，断绝卡死可能
+              t.classList.add('show');
+              if(t.timer) clearTimeout(t.timer);
+              t.timer = setTimeout(() => { t.classList.remove('show'); }, 3000);
+          };
 
           window.getFlagEmoji = function(countryCode) {
               if (!countryCode || countryCode === 'Unknown' || countryCode === 'XX') return '❓';
@@ -2149,7 +2193,7 @@ export default {
                                   </select>
                               </div>
                               
-                              <button onclick="window.submitCfPlacement()" style="width: 100%; background: #007aff; color: white; padding: 12px; border-radius: 8px; font-weight: bold; border: none; cursor: pointer; font-size: 14px; transition: 0.2s; box-shadow: 0 4px 12px rgba(0,122,255,0.2);">🚀 提交修改并无感生效</button>
+                              <button onclick="window.submitCfPlacement()" style="width: 100%; background: #007aff; color: white; padding: 12px; border-radius: 8px; font-weight: bold; border: none; cursor: pointer; font-size: 14px; transition: 0.2s; box-shadow: 0 4px 12px rgba(0,122,255,0.2);">🚀 保存并调度</button>
                           </div>
                       </div>
 
@@ -2158,12 +2202,12 @@ export default {
                           <div class="card-header"><div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🤖 Telegram 通知</div></div></div>
                           <div style="display:flex; flex-direction:column; gap:12px; margin-top:15px;">
                               <div style="position: relative;">
-                                  <input type="password" id="tgToken" placeholder="TG Bot Token (留空将读取环境变量)" style="padding: 12px 40px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
-                                  <span id="icon-tgToken" class="svg-icon-btn" onclick="toggleTgVis('tgToken', 'icon-tgToken')" style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%);" title="显示/隐藏"></span>
+                                  <input type="password" id="tgToken" placeholder="TG Bot Token (留空将读取环境变量)" style="padding: 12px 42px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
+                                  <span class="svg-icon-btn eye-icon inactive" id="icon-tgToken" onclick="toggleTgVis('tgToken', 'icon-tgToken')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);" title="显示/隐藏">\${SVG_EYE}</span>
                               </div>
                               <div style="position: relative;">
-                                  <input type="password" id="tgChatId" placeholder="TG Chat ID (留空将读取环境变量)" style="padding: 12px 40px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
-                                  <span id="icon-tgChatId" class="svg-icon-btn" onclick="toggleTgVis('tgChatId', 'icon-tgChatId')" style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%);" title="显示/隐藏"></span>
+                                  <input type="password" id="tgChatId" placeholder="TG Chat ID (留空将读取环境变量)" style="padding: 12px 42px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
+                                  <span class="svg-icon-btn eye-icon inactive" id="icon-tgChatId" onclick="toggleTgVis('tgChatId', 'icon-tgChatId')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);" title="显示/隐藏">\${SVG_EYE}</span>
                               </div>
                               
                               <div style="display:flex; align-items:center; color:var(--text); font-size:14px; margin-top:4px;">
@@ -2181,7 +2225,7 @@ export default {
                                   <button onclick="testTgMessage()" class="btn-edit" style="flex:1; background:rgba(52,199,89,0.1); color:#34c759;">📊 发送测试报表</button>
                               </div>
                               <div style="font-size: 12px; color: var(--text-sec); line-height: 1.5; margin-top: 2px;">
-                                  * TG 新增四大专属查岗指令：<b>/stats</b> (默认报表)、<b>/mini</b> (无日志极简报表)、<b>/logs</b> (纯净最近记录)、<b>/region</b> (随时随地秒切机房)。
+                                  * TG 新增四大专属查岗指令：<b>/stats</b> (默认报表)、<b>/mini</b> (极简报表)、<b>/logs</b> (纯净记录)、<b>/region</b> (随时随地秒切机房)。
                               </div>
                           </div>
                       </div>
@@ -2205,10 +2249,6 @@ export default {
                       const wrapper = document.createElement('div');
                       wrapper.innerHTML = injectHTML;
                       targetNode.parentNode.insertBefore(wrapper, targetNode.nextSibling);
-                      
-                      // 注入纯净 SVG 眼睛图标
-                      document.getElementById('icon-tgToken').innerHTML = SVG_EYE_CLOSED;
-                      document.getElementById('icon-tgChatId').innerHTML = SVG_EYE_CLOSED;
 
                       fetch('/api/get-tg').then(r => r.json()).then(d => {
                           if(d.success) {
@@ -2272,7 +2312,6 @@ export default {
                   const res = await fetch('/api/cf-placement');
                   const d = await res.json();
                   if(d.success) {
-                      // 完美兼容新的 region 绕过结构
                       if(d.mode && d.mode.region) {
                           let parts = d.mode.region.split(':');
                           document.getElementById('cf-mode').value = parts[0];
@@ -2320,10 +2359,6 @@ export default {
               const modeVal = document.getElementById('cf-mode').value;
               let placementObj = { mode: 'off' };
               
-              // =====================================
-              // 🚀 终极破解：网页端提交时，不要传 mode:'smart' 和 hint
-              // 直接传 region，欺骗 CF API 绕过 10023 校验！
-              // =====================================
               if (modeVal === 'smart') {
                   placementObj = { mode: 'smart' };
               } else if (modeVal === 'aws' || modeVal === 'gcp' || modeVal === 'azure') {
@@ -2335,11 +2370,11 @@ export default {
                   const res = await fetch('/api/cf-placement', { method: 'POST', body: JSON.stringify({ placement: placementObj }) });
                   const d = await res.json();
                   if(d.success) {
-                      (typeof showToast === 'function' ? showToast : alert)('✅ Cloudflare 调度切换成功，底层热更新已无感生效！');
+                      window.showCfToast('✅ 调度切换成功，底层热更新已生效！');
                   } else {
-                      alert('❌ 切换失败: ' + (d.error || '未知错误'));
+                      window.showCfToast('❌ 切换失败: ' + (d.error || '未知错误'));
                   }
-              } catch(e) { alert('请求异常: ' + e.message); console.error(e); }
+              } catch(e) { window.showCfToast('❌ 请求异常: ' + e.message); console.error(e); }
           };
 
           // ------------------------------------
@@ -2349,10 +2384,12 @@ export default {
               if(el && icon) {
                   if (el.type === 'password') {
                       el.type = 'text';
-                      icon.innerHTML = SVG_EYE_OPEN;
+                      icon.classList.remove('inactive');
+                      icon.classList.add('active');
                   } else {
                       el.type = 'password';
-                      icon.innerHTML = SVG_EYE_CLOSED;
+                      icon.classList.remove('active');
+                      icon.classList.add('inactive');
                   }
               }
           };
@@ -2365,7 +2402,7 @@ export default {
                   tempInput.select();
                   document.execCommand("copy");
                   document.body.removeChild(tempInput);
-                  alert('✅ 已成功复制真实地址：\\n' + url);
+                  window.showCfToast('🚀 已成功复制真实地址');
               } catch (e) {
                   prompt('⚠️ 请手动复制以下地址:', url);
               }
@@ -2379,11 +2416,11 @@ export default {
               if (isMasked) {
                   el.textContent = real;
                   el.setAttribute('data-masked', 'false');
-                  if (icon) icon.innerHTML = SVG_EYE_OPEN;
+                  if (icon) { icon.classList.remove('inactive'); icon.classList.add('active'); }
               } else {
                   el.textContent = masked;
                   el.setAttribute('data-masked', 'true');
-                  if (icon) icon.innerHTML = SVG_EYE_CLOSED;
+                  if (icon) { icon.classList.remove('active'); icon.classList.add('inactive'); }
               }
           };
 
@@ -2403,10 +2440,9 @@ export default {
               const form = document.getElementById('addForm');
               if(form) {
                   window.scrollTo({ top: form.offsetTop - 100, behavior: 'smooth' });
-                  if(typeof showToast === 'function') showToast('✅ 地址已成功提取！请点击下方"保存"按钮。');
-                  else alert('✅ 地址已提取至表单，请保存。');
+                  window.showCfToast('✅ 地址已成功提取！请保存。');
               } else {
-                  alert('未找到反代添加表单，请确认您在"代理设置"页面。');
+                  window.showCfToast('❌ 未找到反代添加表单，请确认您在"代理设置"页面。');
               }
           };
 
@@ -2418,7 +2454,7 @@ export default {
               try {
                   const res = await fetch('/api/save-tg', { method: 'POST', body: JSON.stringify({ token, chatId, maskEnabled, logsEnabled }) });
                   const d = await res.json();
-                  if(d.success) (typeof showToast === 'function' ? showToast : alert)('✅ 保存成功');
+                  if(d.success) window.showCfToast('✅ 保存成功');
               } catch(e) { console.error("保存TG配置出错:", e); }
           };
 
@@ -2429,7 +2465,7 @@ export default {
               try {
                   const res = await fetch('/api/test-tg', { method: 'POST', body: JSON.stringify({ token, chatId, logsEnabled }) });
                   const d = await res.json();
-                  if(d.success) (typeof showToast === 'function' ? showToast : alert)('✅ 发送成功，请查看 TG');
+                  if(d.success) window.showCfToast('✅ 发送成功，请查看 TG');
               } catch(e) { console.error("测试TG出错:", e); }
           };
 
@@ -2441,7 +2477,7 @@ export default {
               try {
                   await fetch('/api/rename-emby', { method: 'POST', body: JSON.stringify({ host, name: finalName }) });
                   loadUniversalNodes(); 
-              } catch(e) { alert('保存失败'); console.error(e); }
+              } catch(e) { window.showCfToast('❌ 保存失败'); console.error(e); }
           };
 
           window.loadUniversalNodes = async function() {
@@ -2482,7 +2518,7 @@ export default {
                               </span>
                               <span onclick="renameEmby('\${host}', '\${isEdited ? sName : ''}')" style="cursor:pointer; font-size: 14px; opacity: 0.7; transition: 0.2s; user-select:none;" title="自定义修改服名">✏️</span>
                           </div>
-                          <span id="uni-icon-\${index}" class="svg-icon-btn" onclick="toggleDomainVis(\${index}, '\${host}', '\${maskedHost}')" title="显示/隐藏真实域名">\${SVG_EYE_CLOSED}</span>
+                          <span id="uni-icon-\${index}" class="svg-icon-btn eye-icon inactive" onclick="toggleDomainVis(\${index}, '\${host}', '\${maskedHost}')" title="显示/隐藏真实域名">\${SVG_EYE}</span>
                       </div>\`;
 
                       html += \`
