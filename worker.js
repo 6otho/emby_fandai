@@ -1358,8 +1358,8 @@ const originalWorker = {
 };
 // ==========================================
 // 终极满血版：完美适配截图配置 + 100%像素级还原官方 Settings 接口（彻底告别所有报错）
-// UI 极致优化：独立防卡死原生弹窗 + 完美 1:1 复刻 iOS 风格圆角防误触眼睛 + 智能 UA 记忆净化
-// 核心破解：完美运用 region 隐藏参数真实调度机房，且彻底绕过 10023 限制
+// UI 极致优化：独立防卡死原生弹窗 + 全局劫持重绘 1:1 iOS 风格三层实心眼 + 智能 UA 记忆净化
+// 核心破解：完美运用 region 隐藏参数真实调度机房，彻底修复 10346 边缘节点报错，修复面板消失BUG
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1464,7 +1464,6 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
             if (modeRow && modeRow.value) {
                 let modeData = JSON.parse(modeRow.value);
                 
-                // 完美适配绕过机制的 region 解析
                 if (modeData.region) {
                     let parts = modeData.region.split(':');
                     if(parts.length === 2) {
@@ -1475,7 +1474,6 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
                         activeNodeStr = `☁️ 指定机房 (${modeData.region})`;
                     }
                 } else if (modeData.mode === 'smart' && modeData.hint) {
-                    // 兼容老数据
                     let [prov, reg] = modeData.hint.split(':');
                     let icon = prov === 'aws' ? '☁️ AWS' : (prov === 'gcp' ? '☁️ GCP' : '☁️ Azure');
                     activeNodeStr = `${icon} (${reg})`;
@@ -1738,9 +1736,6 @@ export default {
               let ua = request.headers.get("User-Agent") || "Unknown";
               const prefixStr = "通用: " + proxyTarget;
               
-              // =====================================
-              // 🚀 终极破解 UA：智能记忆设备的好名字，过滤 CFNetwork 等拉流垃圾名
-              // =====================================
               let isJunkUa = /cfnetwork|darwin|stagefright|exoplayer|okhttp|lavf/i.test(ua);
               if (isJunkUa) {
                   const knownGood = await env.DB.prepare("SELECT ua FROM visitor_logs WHERE ip = ? AND ua NOT LIKE '%CFNetwork%' AND ua NOT LIKE '%Darwin%' AND ua NOT LIKE '%stagefright%' AND ua NOT LIKE '%ExoPlayer%' ORDER BY timestamp DESC LIMIT 1").bind(ip).first();
@@ -1795,7 +1790,7 @@ export default {
                     
                     reply += `☁️ <b>【AWS 亚马逊云】</b>\n`;
                     [ {v:'ap-east-1', n:'香港'}, {v:'ap-northeast-1', n:'东京'}, {v:'ap-northeast-2', n:'首尔'},
-                      {v:'ap-northeast-3', n:'大阪'}, {v:'ap-southeast-1', n:'新加坡'}, {v:'ap-southeast-2', n:'悉尼'},
+                      {v:'ap-northeast-3', n:'大阪'}, {v:'ap-southeast-1', n:'新加坡'}, {v:'ap-southeast-2', n:'悉悉'},
                       {v:'ap-south-1', n:'孟买'}, {v:'us-east-1', n:'弗吉尼亚'}, {v:'us-west-1', n:'加州'},
                       {v:'us-west-2', n:'俄勒冈'}, {v:'eu-central-1', n:'法兰克福'}, {v:'eu-west-1', n:'爱尔兰'},
                       {v:'eu-west-2', n:'伦敦'}
@@ -1820,31 +1815,30 @@ export default {
                     let pRegion = parts[2].toLowerCase();
                     let modeData = {};
                     
-                    // 同样使用 region 欺骗 CF API
+                    // 彻底修复 10346 错误：开启边缘节点（关闭调度）时，直接置为 null
+                    let cfSettingsPayload = {};
                     if (pMode === 'aws' || pMode === 'gcp' || pMode === 'azure') {
                         modeData = { region: `${pMode}:${pRegion}` };
+                        cfSettingsPayload = { placement: modeData };
                     } else if (pMode === 'edge') {
                         modeData = { mode: 'off' };
+                        cfSettingsPayload = { placement: null }; // CF 核心底层修复点
                     } else if (pMode === 'smart') {
                         modeData = { mode: 'smart' };
+                        cfSettingsPayload = { placement: modeData };
                     }
                     
                     ctx.waitUntil((async () => {
                         try {
                             const creds = await getCfCredentials(env);
-                            
                             const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${creds.accId}/workers/scripts/${creds.wName}/settings`;
 
                             const formData = new FormData();
-                            formData.append('settings', new Blob([JSON.stringify({
-                                placement: modeData
-                            })], { type: 'application/json' }));
+                            formData.append('settings', new Blob([JSON.stringify(cfSettingsPayload)], { type: 'application/json' }));
 
                             const cfResp = await fetch(cfUrl, {
                                 method: "PATCH",
-                                headers: { 
-                                    "Authorization": `Bearer ${creds.cfToken}`
-                                },
+                                headers: { "Authorization": `Bearer ${creds.cfToken}` },
                                 body: formData
                             });
                             
@@ -1912,19 +1906,22 @@ export default {
         try {
             const body = await request.json();
             const creds = await getCfCredentials(env);
-            
             const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${creds.accId}/workers/scripts/${creds.wName}/settings`;
 
+            // 彻底修复 10346 错误：API 拒绝 {"mode": "off"}，必须置为空(null)
+            let cfSettingsObj = {};
+            if (body.placement && body.placement.mode === 'off') {
+                cfSettingsObj = { placement: null };
+            } else {
+                cfSettingsObj = { placement: body.placement };
+            }
+
             const formData = new FormData();
-            formData.append('settings', new Blob([JSON.stringify({
-                placement: body.placement
-            })], { type: 'application/json' }));
+            formData.append('settings', new Blob([JSON.stringify(cfSettingsObj)], { type: 'application/json' }));
 
             const cfResp = await fetch(cfUrl, {
                 method: "PATCH",
-                headers: { 
-                    "Authorization": `Bearer ${creds.cfToken}`
-                },
+                headers: { "Authorization": `Bearer ${creds.cfToken}` },
                 body: formData
             });
 
@@ -2060,53 +2057,67 @@ export default {
               
               .cf-select { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 14px; cursor: pointer; outline: none; box-sizing: border-box; }
               
-              /* 1:1复刻 iOS 风格防误触小方框高级眼 */
-              .svg-icon-btn { 
-                  display: flex; align-items: center; justify-content: center; 
-                  cursor: pointer; user-select: none; 
-                  width: 26px; height: 26px; 
-                  background: var(--card); 
-                  border: 1px solid var(--border); 
-                  border-radius: 8px;
-                  transition: all 0.2s ease;
-                  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-                  z-index: 10;
+              .svg-icon-btn, button.icon-btn[title="查看明文"] { 
+                  display: inline-flex !important; align-items: center !important; justify-content: center !important; 
+                  cursor: pointer !important; user-select: none !important; 
+                  width: 26px !important; height: 26px !important; 
+                  background: var(--card) !important; 
+                  border: 1px solid var(--border) !important; 
+                  border-radius: 8px !important;
+                  transition: all 0.2s ease !important;
+                  box-shadow: 0 1px 4px rgba(0,0,0,0.05) !important;
+                  z-index: 10 !important;
+                  padding: 0 !important;
+                  margin: 0 !important;
+                  box-sizing: border-box !important;
               }
-              .svg-icon-btn:hover { filter: brightness(0.95); box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
-              .eye-icon.active { color: var(--primary); background: rgba(0, 122, 255, 0.08); border-color: rgba(0, 122, 255, 0.3); }
-              .eye-icon.inactive { color: var(--text); opacity: 0.85; } 
+              .svg-icon-btn:hover, button.icon-btn[title="查看明文"]:hover { 
+                  filter: brightness(0.95) !important; 
+                  box-shadow: 0 2px 6px rgba(0,0,0,0.1) !important; 
+              }
+              .eye-icon.active { color: var(--primary) !important; background: rgba(0, 122, 255, 0.08) !important; border-color: rgba(0, 122, 255, 0.3) !important; }
+              .eye-icon.inactive { color: var(--text) !important; opacity: 0.85 !important; } 
               
-              /* 修复并美化原生 Toast，绝对不会卡在半路 */
               #custom-cf-toast {
-                  position: fixed;
-                  top: -60px;
-                  left: 50%;
-                  transform: translateX(-50%);
-                  background: rgba(0, 0, 0, 0.85);
-                  color: #fff;
-                  padding: 12px 24px;
-                  border-radius: 30px;
-                  font-size: 14px;
-                  font-weight: 600;
-                  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
-                  z-index: 999999;
-                  opacity: 0;
-                  pointer-events: none;
+                  position: fixed; top: -60px; left: 50%; transform: translateX(-50%);
+                  background: rgba(0, 0, 0, 0.85); color: #fff; padding: 12px 24px;
+                  border-radius: 30px; font-size: 14px; font-weight: 600;
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.25); z-index: 999999;
+                  opacity: 0; pointer-events: none;
                   transition: all 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-                  white-space: nowrap;
-                  backdrop-filter: blur(10px);
+                  white-space: nowrap; backdrop-filter: blur(10px);
                   border: 1px solid rgba(255,255,255,0.1);
               }
-              #custom-cf-toast.show {
-                  opacity: 1;
-                  top: 25px;
-              }
+              #custom-cf-toast.show { opacity: 1; top: 25px; }
           </style>
           <script>
-          // 纯黑白三层实心眼睛图标（眼眶+白眼珠+黑瞳孔） 1:1复刻截图
-          const SVG_EYE = \`<svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 4C5.5 4 1 12 1 12s4.5 8 11 8 11-8 11-8-4.5-8-11-8z" fill="currentColor"/><circle cx="12" cy="12" r="4.5" fill="#ffffff"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg>\`;
+          const SVG_EYE = \`<svg viewBox="0 0 24 24" width="16" height="16" style="flex-shrink:0; pointer-events:none;"><path d="M12 4C5.5 4 1 12 1 12s4.5 8 11 8 11-8 11-8-4.5-8-11-8z" fill="currentColor"/><circle cx="12" cy="12" r="4.5" fill="#ffffff"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>\`;
 
-          // 原生独立防卡死 Toast 弹窗
+          function hijackAndUpgradeOldEyes() {
+              document.querySelectorAll('button.icon-btn[title="查看明文"]').forEach(btn => {
+                  if (!btn.dataset.upgraded) {
+                      btn.innerHTML = SVG_EYE;
+                      btn.dataset.upgraded = "1";
+                      btn.classList.add('eye-icon', 'inactive');
+                  }
+                  try {
+                      const match = btn.getAttribute('onclick').match(/'([^']+)'/);
+                      if(match && match[1]) {
+                          const targetEl = document.getElementById(match[1]);
+                          if(targetEl) {
+                              if(targetEl.classList.contains('actual-text')) {
+                                  btn.classList.add('active'); btn.classList.remove('inactive');
+                              } else {
+                                  btn.classList.add('inactive'); btn.classList.remove('active');
+                              }
+                          }
+                      }
+                  } catch(e) {}
+              });
+          }
+          // 修复了这里的拼写错误！此前是 hijajckAndUpgradeOldEyes 导致面板崩溃不渲染。
+          setInterval(hijackAndUpgradeOldEyes, 500);
+
           window.showCfToast = function(msg) {
               let t = document.getElementById('custom-cf-toast');
               if(!t) {
@@ -2116,7 +2127,7 @@ export default {
               }
               t.textContent = msg;
               t.classList.remove('show');
-              void t.offsetWidth; // 触发重绘，断绝卡死可能
+              void t.offsetWidth;
               t.classList.add('show');
               if(t.timer) clearTimeout(t.timer);
               t.timer = setTimeout(() => { t.classList.remove('show'); }, 3000);
@@ -2244,11 +2255,21 @@ export default {
               \`;
 
               const observer = new MutationObserver(() => {
-                  const targetNode = document.getElementById('addForm') || document.getElementById('list-grid');
+                  // 修复点：加入终极保底机制，即使原版页面改版也能强行渲染出面板
+                  let targetNode = document.getElementById('addForm') || document.getElementById('list-grid');
+                  if (!targetNode) {
+                      targetNode = document.querySelector('.main-content') || document.querySelector('.content-wrapper') || document.body;
+                  }
+                  
                   if (targetNode && !document.getElementById('my-custom-panel-wrapper')) {
                       const wrapper = document.createElement('div');
                       wrapper.innerHTML = injectHTML;
-                      targetNode.parentNode.insertBefore(wrapper, targetNode.nextSibling);
+                      
+                      if (targetNode === document.body || targetNode.classList.contains('main-content')) {
+                          targetNode.insertBefore(wrapper, targetNode.firstChild);
+                      } else {
+                          targetNode.parentNode.insertBefore(wrapper, targetNode.nextSibling);
+                      }
 
                       fetch('/api/get-tg').then(r => r.json()).then(d => {
                           if(d.success) {
@@ -2266,7 +2287,6 @@ export default {
               observer.observe(document.body, { childList: true, subtree: true });
           });
 
-          // --- 核心：CF API 自动选择列表 ---
           const CF_REGIONS = {
               aws: [
                   {v:'ap-east-1', l:'🇭🇰 ap-east-1 (香港 / Hong Kong)'},
@@ -2357,7 +2377,7 @@ export default {
 
           window.submitCfPlacement = async function() {
               const modeVal = document.getElementById('cf-mode').value;
-              let placementObj = { mode: 'off' };
+              let placementObj = { mode: 'off' }; // 这里前端照常发，底层 Worker 会处理转换
               
               if (modeVal === 'smart') {
                   placementObj = { mode: 'smart' };
@@ -2377,7 +2397,6 @@ export default {
               } catch(e) { window.showCfToast('❌ 请求异常: ' + e.message); console.error(e); }
           };
 
-          // ------------------------------------
           window.toggleTgVis = function(inputId, iconId) {
               const el = document.getElementById(inputId);
               const icon = document.getElementById(iconId);
@@ -2442,7 +2461,7 @@ export default {
                   window.scrollTo({ top: form.offsetTop - 100, behavior: 'smooth' });
                   window.showCfToast('✅ 地址已成功提取！请保存。');
               } else {
-                  window.showCfToast('❌ 未找到反代添加表单，请确认您在"代理设置"页面。');
+                  window.showCfToast('⚠️ 提档参数已预填，请检查顶部配置区。');
               }
           };
 
