@@ -1357,9 +1357,9 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极满血版：极致体验 + 响应式双排 UI 布局 + 全局调度状态大屏横幅
-// 逻辑修正：恢复面板修改 TG Bot Token 的功能，直接存入 D1 数据库，告别 CF 环境变量的折磨！
-// UI 极致优化：新增左上角全站调度状态监控大屏；电脑端左右双排并列，手机端自动折叠。
+// 终极满血版：极致体验 + 响应式双排 UI 布局
+// 逻辑修正：听劝！恢复面板修改 TG Bot Token 的功能，直接存入 D1 数据库，告别 CF 环境变量的折磨！
+// UI 极致优化：电脑端左右双排并列，手机端自动折叠；完美保留一键 Webhook 激活。
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1479,7 +1479,7 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
                 } else if (modeData.mode === 'smart') {
                     activeNodeStr = "🤖 智能调度 (Smart Placement)";
                 } else {
-                    activeNodeStr = "🏠 边缘节点 (默认)";
+                    activeNodeStr = "🌍 边缘节点 (Edge)";
                 }
             }
 
@@ -1951,6 +1951,7 @@ export default {
             const tgData = await tgRes.json();
 
             if (tgData.ok) {
+                // 激活成功顺手保存 Token
                 if (env.DB && data.token) {
                     await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_BOT_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.token.trim()).run().catch(()=>{});
                 }
@@ -2140,14 +2141,6 @@ export default {
               }
               .btn-webhook-activate:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0, 122, 255, 0.35); }
               .btn-webhook-activate:active { transform: translateY(1px); box-shadow: 0 2px 8px rgba(0, 122, 255, 0.2); }
-
-              /* 全局调度状态大屏横幅特效 */
-              .status-banner {
-                  margin-top: 20px; padding: 18px 24px; background: var(--card); border: 1px solid var(--border); 
-                  border-left: 5px solid #007aff; border-radius: 12px; display: flex; align-items: center; 
-                  justify-content: space-between; box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: all 0.3s;
-              }
-              .status-banner.updating { transform: scale(0.98); opacity: 0.8; }
           </style>
           <script>
           const SVG_EYE = \`<svg viewBox="0 0 24 24" width="16" height="16" style="flex-shrink:0; pointer-events:none;"><path d="M12 4C5.5 4 1 12 1 12s4.5 8 11 8 11-8 11-8-4.5-8-11-8z" fill="currentColor"/><circle cx="12" cy="12" r="4.5" fill="#ffffff"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>\`;
@@ -2225,45 +2218,10 @@ export default {
               return \`\${first.substring(0, 3)}◻️◻️◻️.\${last}\`;
           };
 
-          // 核心：格式化当前调度状态，和TG完全一致
-          window.formatActiveNodeStr = function(modeData) {
-              if (!modeData || (modeData.mode === 'off' && !modeData.region)) return "🏠 边缘节点 (默认)";
-              if (modeData.region) {
-                  let parts = modeData.region.split(':');
-                  if(parts.length === 2) {
-                      let prov = parts[0];
-                      let reg = parts[1];
-                      let icon = prov === 'aws' ? '☁️ AWS' : (prov === 'gcp' ? '☁️ GCP' : '☁️ Azure');
-                      return \`\${icon} (\${reg})\`;
-                  }
-                  return \`☁️ 指定机房 (\${modeData.region})\`;
-              } else if (modeData.mode === 'smart') {
-                  if (modeData.hint) {
-                      let parts = modeData.hint.split(':');
-                      let icon = parts[0] === 'aws' ? '☁️ AWS' : (parts[0] === 'gcp' ? '☁️ GCP' : '☁️ Azure');
-                      return \`\${icon} (\${parts[1]})\`;
-                  }
-                  return "🤖 智能调度 (Smart Placement)";
-              } else {
-                  return "🏠 边缘节点 (默认)";
-              }
-          };
-
           document.addEventListener("DOMContentLoaded", () => {
               const injectHTML = \`
                   <div id="my-custom-panel-wrapper">
                       
-                      <!-- 全局调度状态大屏横幅 -->
-                      <div id="status-banner" class="status-banner">
-                          <div>
-                              <div style="font-size: 13px; color: var(--text-sec); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">当前全站流量调度状态</div>
-                              <div id="ui-active-route" style="font-size: 22px; font-weight: bold; color: var(--text);">
-                                  <span style="opacity: 0.5; font-size: 16px;">正在检测...</span>
-                              </div>
-                          </div>
-                          <div style="font-size: 32px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));">🔀</div>
-                      </div>
-
                       <!-- 响应式并排容器：宽屏并排，窄屏自动折叠上下 -->
                       <div class="top-cards-row">
                           
@@ -2383,14 +2341,17 @@ export default {
                               document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
                               document.getElementById('tgLogsToggle').checked = d.logsEnabled !== false;
 
+                              // 智能提示徽章
                               const badge = document.getElementById('tg-token-badge');
                               if (d.isEnvToken && !d.token) {
+                                  // 面板没填，但是读取到了环境变量里的
                                   badge.style.display = 'block';
                                   badge.innerHTML = "💡 <b>已读取 Cloudflare 环境变量 Token</b> (您无需在此处重复填写)";
                                   badge.style.color = "#007aff";
                                   badge.style.background = "rgba(0,122,255,0.05)";
                                   badge.style.borderLeftColor = "#007aff";
                               } else if (d.token) {
+                                  // 面板存了的
                                   badge.style.display = 'block';
                                   badge.innerHTML = "✅ <b>已使用面板 D1 数据库 Token</b> (随心修改，随时保存生效)";
                                   badge.style.color = "#34c759";
@@ -2452,9 +2413,6 @@ export default {
                   const res = await fetch('/api/cf-placement');
                   const d = await res.json();
                   if(d.success) {
-                      // 初始化大屏显示
-                      document.getElementById('ui-active-route').innerHTML = window.formatActiveNodeStr(d.mode);
-
                       if(d.mode && d.mode.region) {
                           let parts = d.mode.region.split(':');
                           document.getElementById('cf-mode').value = parts[0];
@@ -2514,15 +2472,6 @@ export default {
                   const d = await res.json();
                   if(d.success) {
                       window.showCfToast('✅ 调度切换成功，底层热更新已生效！');
-                      
-                      // 触发横幅更新动画并同步显示最新地址
-                      const banner = document.getElementById('status-banner');
-                      banner.classList.add('updating');
-                      setTimeout(() => {
-                          document.getElementById('ui-active-route').innerHTML = window.formatActiveNodeStr(placementObj);
-                          banner.classList.remove('updating');
-                      }, 200);
-
                   } else {
                       window.showCfToast('❌ 切换失败: ' + (d.error || '未知错误'));
                   }
