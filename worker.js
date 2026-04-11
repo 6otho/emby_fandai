@@ -1357,9 +1357,9 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极满血版：完美适配截图配置 + 100%像素级还原官方 Settings 接口（彻底告别所有报错）
-// UI 极致优化：独立防卡死原生弹窗 + 全局劫持重绘 1:1 iOS 风格三层实心眼 + 智能 UA 记忆净化
-// 核心破解：完美运用 region 隐藏参数真实调度机房，彻底修复 10346 边缘节点报错，修复面板消失BUG
+// 终极满血版：极致体验 + 响应式双排 UI 布局 + 全局调度状态大屏横幅
+// 逻辑修正：恢复面板修改 TG Bot Token 的功能，直接存入 D1 数据库，告别 CF 环境变量的折磨！
+// UI 极致优化：新增左上角全站调度状态监控大屏；电脑端左右双排并列，手机端自动折叠。
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1430,15 +1430,14 @@ async function fetchEmbyServerName(host) {
     return host;
 }
 
-// 核心：严格校验你截图里配置的环境变量，直接返回！绝不乱发请求。
 async function getCfCredentials(env) {
     const accId = env.CF_ACCOUNT_ID;
     const wName = env.CF_WORKER_NAME;
     const cfToken = env.CF_API_TOKEN;
 
     if (!cfToken) throw new Error("缺少环境变量 CF_API_TOKEN");
-    if (!accId) throw new Error("缺少环境变量 CF_ACCOUNT_ID (请按照教程截图添加)");
-    if (!wName) throw new Error("缺少环境变量 CF_WORKER_NAME (请按照教程截图添加)");
+    if (!accId) throw new Error("缺少环境变量 CF_ACCOUNT_ID");
+    if (!wName) throw new Error("缺少环境变量 CF_WORKER_NAME");
 
     return { accId, wName, cfToken };
 }
@@ -1480,7 +1479,7 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
                 } else if (modeData.mode === 'smart') {
                     activeNodeStr = "🤖 智能调度 (Smart Placement)";
                 } else {
-                    activeNodeStr = "🌍 边缘节点 (Edge)";
+                    activeNodeStr = "🏠 边缘节点 (默认)";
                 }
             }
 
@@ -1658,8 +1657,10 @@ export default {
         if (logRow && logRow.value === 'false') includeLogs = false;
       } catch (e) {}
     }
+    
     const token = dbTgToken || env.TG_BOT_TOKEN;
     const chatId = dbTgChatId || env.TG_CHAT_ID;
+    
     if (token && chatId) {
         ctx.waitUntil((async () => {
             await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: await generateTgReport(env, ctx, { includeLogs, onlyLogs: false }), parse_mode: "HTML" }) });
@@ -1815,14 +1816,13 @@ export default {
                     let pRegion = parts[2].toLowerCase();
                     let modeData = {};
                     
-                    // 彻底修复 10346 错误：开启边缘节点（关闭调度）时，直接置为 null
                     let cfSettingsPayload = {};
                     if (pMode === 'aws' || pMode === 'gcp' || pMode === 'azure') {
                         modeData = { region: `${pMode}:${pRegion}` };
                         cfSettingsPayload = { placement: modeData };
                     } else if (pMode === 'edge') {
                         modeData = { mode: 'off' };
-                        cfSettingsPayload = { placement: null }; // CF 核心底层修复点
+                        cfSettingsPayload = { placement: null }; 
                     } else if (pMode === 'smart') {
                         modeData = { mode: 'smart' };
                         cfSettingsPayload = { placement: modeData };
@@ -1908,7 +1908,6 @@ export default {
             const creds = await getCfCredentials(env);
             const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${creds.accId}/workers/scripts/${creds.wName}/settings`;
 
-            // 彻底修复 10346 错误：API 拒绝 {"mode": "off"}，必须置为空(null)
             let cfSettingsObj = {};
             if (body.placement && body.placement.mode === 'off') {
                 cfSettingsObj = { placement: null };
@@ -1939,6 +1938,29 @@ export default {
             await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('CF_PLACEMENT_MODE', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(body.placement)).run();
             return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
         } catch(e) { return new Response(JSON.stringify({ success: false, error: e.message }), { headers: { 'Content-Type': 'application/json' } }); }
+    }
+
+    if (url.pathname === "/api/set-webhook" && request.method === "POST") {
+        try {
+            const data = await request.json();
+            const token = data.token || dbTgToken || env.TG_BOT_TOKEN;
+            if (!token) return new Response(JSON.stringify({ success: false, error: "请先在上方填写您的 TG Bot Token" }), { headers: { 'Content-Type': 'application/json' } });
+
+            const webhookUrl = `https://${currentHost}/`;
+            const tgRes = await fetch(`https://api.telegram.org/bot${token}/setWebhook?url=${encodeURIComponent(webhookUrl)}&drop_pending_updates=true`);
+            const tgData = await tgRes.json();
+
+            if (tgData.ok) {
+                if (env.DB && data.token) {
+                    await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_BOT_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.token.trim()).run().catch(()=>{});
+                }
+                return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
+            } else {
+                return new Response(JSON.stringify({ success: false, error: tgData.description }), { headers: { 'Content-Type': 'application/json' } });
+            }
+        } catch (e) {
+            return new Response(JSON.stringify({ success: false, error: e.message }), { headers: { 'Content-Type': 'application/json' } });
+        }
     }
 
     if (url.pathname === "/api/get-universal" && request.method === "GET") {
@@ -1997,15 +2019,34 @@ export default {
                 if (logRow && logRow.value === 'false') logsEnabled = 'false';
             } catch(e) {}
         }
-        return new Response(JSON.stringify({ success: true, token: dbTgToken || "", chatId: dbTgChatId || "", maskEnabled: maskEnabled === 'true', logsEnabled: logsEnabled === 'true' }), { headers: { 'Content-Type': 'application/json' } });
+        
+        return new Response(JSON.stringify({ 
+            success: true, 
+            token: dbTgToken || env.TG_BOT_TOKEN || "", 
+            chatId: dbTgChatId || env.TG_CHAT_ID || "", 
+            maskEnabled: maskEnabled === 'true', 
+            logsEnabled: logsEnabled === 'true',
+            isEnvToken: !dbTgToken && !!env.TG_BOT_TOKEN 
+        }), { headers: { 'Content-Type': 'application/json' } });
     }
 
     if (url.pathname === "/api/save-tg" && request.method === "POST") {
       if (!env.DB) return new Response(JSON.stringify({ success: false, error: "未绑定 D1" }), { headers: { 'Content-Type': 'application/json' } });
       try {
         const data = await request.json();
-        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_BOT_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.token || "").run();
-        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_CHAT_ID', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.chatId || "").run();
+        
+        if (data.token && data.token.trim() !== '') {
+            await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_BOT_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.token.trim()).run();
+        } else {
+            await env.DB.prepare("DELETE FROM settings WHERE key = 'TG_BOT_TOKEN'").run().catch(()=>{});
+        }
+
+        if (data.chatId && data.chatId.trim() !== '') {
+            await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_CHAT_ID', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.chatId.trim()).run();
+        } else {
+            await env.DB.prepare("DELETE FROM settings WHERE key = 'TG_CHAT_ID'").run().catch(()=>{});
+        }
+        
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_MASK_ENABLED', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.maskEnabled ? 'true' : 'false').run();
         await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_LOGS_ENABLED', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.logsEnabled ? 'true' : 'false').run();
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
@@ -2017,7 +2058,9 @@ export default {
         const data = await request.json();
         const token = data.token || dbTgToken || env.TG_BOT_TOKEN;
         const chatId = data.chatId || dbTgChatId || env.TG_CHAT_ID;
-        if (!token || !chatId) return new Response(JSON.stringify({ success: false, error: "未配置" }), { headers: { 'Content-Type': 'application/json' } });
+        
+        if (!token) return new Response(JSON.stringify({ success: false, error: "请先填写 TG Bot Token" }), { headers: { 'Content-Type': 'application/json' } });
+        if (!chatId) return new Response(JSON.stringify({ success: false, error: "请先填写 TG Chat ID" }), { headers: { 'Content-Type': 'application/json' } });
         
         const opts = { includeLogs: data.logsEnabled !== false, onlyLogs: false };
         const reportText = await generateTgReport(env, ctx, opts);
@@ -2042,6 +2085,9 @@ export default {
       if (html.includes('</body>')) {
           const injectScript = `
           <style>
+              .top-cards-row { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 20px; }
+              .top-cards-row > .emby-card { flex: 1 1 350px; margin-top: 0 !important; }
+
               .uni-scroll-container { display: flex; flex-wrap: nowrap; gap: 16px; overflow-x: auto; padding: 15px 0 5px 0; scrollbar-width: thin; }
               .uni-scroll-container::-webkit-scrollbar { height: 6px; }
               .uni-scroll-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -2071,10 +2117,7 @@ export default {
                   margin: 0 !important;
                   box-sizing: border-box !important;
               }
-              .svg-icon-btn:hover, button.icon-btn[title="查看明文"]:hover { 
-                  filter: brightness(0.95) !important; 
-                  box-shadow: 0 2px 6px rgba(0,0,0,0.1) !important; 
-              }
+              .svg-icon-btn:hover, button.icon-btn[title="查看明文"]:hover { filter: brightness(0.95) !important; box-shadow: 0 2px 6px rgba(0,0,0,0.1) !important; }
               .eye-icon.active { color: var(--primary) !important; background: rgba(0, 122, 255, 0.08) !important; border-color: rgba(0, 122, 255, 0.3) !important; }
               .eye-icon.inactive { color: var(--text) !important; opacity: 0.85 !important; } 
               
@@ -2089,6 +2132,22 @@ export default {
                   border: 1px solid rgba(255,255,255,0.1);
               }
               #custom-cf-toast.show { opacity: 1; top: 25px; }
+
+              .btn-webhook-activate {
+                  width: 100%; margin-top: 10px; padding: 10px; border-radius: 8px; font-weight: bold; border: none; cursor: pointer;
+                  background: linear-gradient(135deg, #007aff, #005bb5); color: white; transition: all 0.2s;
+                  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.25); font-size: 14px; text-align: center;
+              }
+              .btn-webhook-activate:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0, 122, 255, 0.35); }
+              .btn-webhook-activate:active { transform: translateY(1px); box-shadow: 0 2px 8px rgba(0, 122, 255, 0.2); }
+
+              /* 全局调度状态大屏横幅特效 */
+              .status-banner {
+                  margin-top: 20px; padding: 18px 24px; background: var(--card); border: 1px solid var(--border); 
+                  border-left: 5px solid #007aff; border-radius: 12px; display: flex; align-items: center; 
+                  justify-content: space-between; box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: all 0.3s;
+              }
+              .status-banner.updating { transform: scale(0.98); opacity: 0.8; }
           </style>
           <script>
           const SVG_EYE = \`<svg viewBox="0 0 24 24" width="16" height="16" style="flex-shrink:0; pointer-events:none;"><path d="M12 4C5.5 4 1 12 1 12s4.5 8 11 8 11-8 11-8-4.5-8-11-8z" fill="currentColor"/><circle cx="12" cy="12" r="4.5" fill="#ffffff"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>\`;
@@ -2115,7 +2174,6 @@ export default {
                   } catch(e) {}
               });
           }
-          // 修复了这里的拼写错误！此前是 hijajckAndUpgradeOldEyes 导致面板崩溃不渲染。
           setInterval(hijackAndUpgradeOldEyes, 500);
 
           window.showCfToast = function(msg) {
@@ -2167,81 +2225,129 @@ export default {
               return \`\${first.substring(0, 3)}◻️◻️◻️.\${last}\`;
           };
 
+          // 核心：格式化当前调度状态，和TG完全一致
+          window.formatActiveNodeStr = function(modeData) {
+              if (!modeData || (modeData.mode === 'off' && !modeData.region)) return "🏠 边缘节点 (默认)";
+              if (modeData.region) {
+                  let parts = modeData.region.split(':');
+                  if(parts.length === 2) {
+                      let prov = parts[0];
+                      let reg = parts[1];
+                      let icon = prov === 'aws' ? '☁️ AWS' : (prov === 'gcp' ? '☁️ GCP' : '☁️ Azure');
+                      return \`\${icon} (\${reg})\`;
+                  }
+                  return \`☁️ 指定机房 (\${modeData.region})\`;
+              } else if (modeData.mode === 'smart') {
+                  if (modeData.hint) {
+                      let parts = modeData.hint.split(':');
+                      let icon = parts[0] === 'aws' ? '☁️ AWS' : (parts[0] === 'gcp' ? '☁️ GCP' : '☁️ Azure');
+                      return \`\${icon} (\${parts[1]})\`;
+                  }
+                  return "🤖 智能调度 (Smart Placement)";
+              } else {
+                  return "🏠 边缘节点 (默认)";
+              }
+          };
+
           document.addEventListener("DOMContentLoaded", () => {
               const injectHTML = \`
                   <div id="my-custom-panel-wrapper">
-                      <!-- 原生 CF Cloud Provider 极简配置中心 -->
-                      <div class="emby-card" data-search="多地区 面板 节点 调度 云厂商 AWS GCP" style="margin-top: 20px; border: 1px solid var(--border);">
-                          <div class="card-header" style="border-bottom: none; padding-bottom: 0;">
-                              <div class="card-title-group">
-                                  <div style="font-weight: 600; font-size: 16px; color: var(--text);">⚙️ Worker 官方原生调度机房选择</div>
+                      
+                      <!-- 全局调度状态大屏横幅 -->
+                      <div id="status-banner" class="status-banner">
+                          <div>
+                              <div style="font-size: 13px; color: var(--text-sec); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">当前全站流量调度状态</div>
+                              <div id="ui-active-route" style="font-size: 22px; font-weight: bold; color: var(--text);">
+                                  <span style="opacity: 0.5; font-size: 16px;">正在检测...</span>
                               </div>
                           </div>
+                          <div style="font-size: 32px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));">🔀</div>
+                      </div>
+
+                      <!-- 响应式并排容器：宽屏并排，窄屏自动折叠上下 -->
+                      <div class="top-cards-row">
                           
-                          <div style="padding: 15px; display: flex; flex-direction: column; gap: 12px;">
-                              <div id="cf-env-badge" style="font-size: 12px; color: #34c759; line-height: 1.5; background: rgba(52,199,89,0.05); padding: 10px; border-radius: 8px; border-left: 3px solid #34c759;">
-                                  🚀 <b>环境变量直通成功</b>：系统已完全对接您配置的 [ACCOUNT_ID] 和 [WORKER_NAME]，尽情丝滑秒切即可！
-                              </div>
-                              <div id="cf-norm-badge" style="font-size: 12px; color: var(--text-sec); line-height: 1.5; background: rgba(0,122,255,0.05); padding: 10px; border-radius: 8px; border-left: 3px solid #007aff;">
-                                  💡 <b>调度说明</b>：请在此选择您希望 Worker 流量落地的物理机房。切换瞬间生效，<b>当前观看的用户绝对不会断流。</b>
-                              </div>
-                              
-                              <div>
-                                  <div style="font-size: 13px; font-weight: bold; margin-bottom: 6px; color: var(--text);">🎯 选择调度模式 / 云提供商</div>
-                                  <select id="cf-mode" onchange="window.handleCfModeChange()" class="cf-select">
-                                      <option value="edge">🌍 边缘节点 (Edge - 默认离访客最近)</option>
-                                      <option value="smart">🤖 智能调度 (Smart Placement - 自动优化延迟)</option>
-                                      <option value="aws">☁️ 指定机房落地 - AWS (亚马逊云)</option>
-                                      <option value="gcp">☁️ 指定机房落地 - GCP (谷歌云)</option>
-                                      <option value="azure">☁️ 指定机房落地 - Azure (微软云)</option>
-                                  </select>
+                          <!-- 原生 CF Cloud Provider 极简配置中心 -->
+                          <div class="emby-card" data-search="多地区 面板 节点 调度 云厂商 AWS GCP" style="border: 1px solid var(--border);">
+                              <div class="card-header" style="border-bottom: none; padding-bottom: 0;">
+                                  <div class="card-title-group">
+                                      <div style="font-weight: 600; font-size: 16px; color: var(--text);">⚙️ Worker 官方原生调度机房选择</div>
+                                  </div>
                               </div>
                               
-                              <div id="cf-region-wrapper" style="display:none;">
-                                  <div style="font-size: 13px; font-weight: bold; margin-bottom: 6px; color: var(--text);">📍 指定落地机房</div>
-                                  <select id="cf-region" class="cf-select">
-                                      <!-- JS 动态注入 -->
-                                  </select>
+                              <div style="padding: 15px; display: flex; flex-direction: column; gap: 12px;">
+                                  <div style="font-size: 12px; color: #34c759; line-height: 1.5; background: rgba(52,199,89,0.05); padding: 10px; border-radius: 8px; border-left: 3px solid #34c759;">
+                                      🚀 <b>环境直通成功</b>：系统已完全对接您配置的 [ACCOUNT_ID] 和 [WORKER_NAME]，尽情丝滑秒切！
+                                  </div>
+                                  <div style="font-size: 12px; color: var(--text-sec); line-height: 1.5; background: rgba(0,122,255,0.05); padding: 10px; border-radius: 8px; border-left: 3px solid #007aff;">
+                                      💡 <b>调度说明</b>：请在此选择流量落地的物理机房。切换瞬间生效，<b>当前观看的用户绝对不断流。</b>
+                                  </div>
+                                  
+                                  <div>
+                                      <div style="font-size: 13px; font-weight: bold; margin-bottom: 6px; color: var(--text);">🎯 选择调度模式 / 云提供商</div>
+                                      <select id="cf-mode" onchange="window.handleCfModeChange()" class="cf-select">
+                                          <option value="edge">🌍 边缘节点 (Edge - 默认离访客最近)</option>
+                                          <option value="smart">🤖 智能调度 (Smart Placement - 自动优化延迟)</option>
+                                          <option value="aws">☁️ 指定机房落地 - AWS (亚马逊云)</option>
+                                          <option value="gcp">☁️ 指定机房落地 - GCP (谷歌云)</option>
+                                          <option value="azure">☁️ 指定机房落地 - Azure (微软云)</option>
+                                      </select>
+                                  </div>
+                                  
+                                  <div id="cf-region-wrapper" style="display:none;">
+                                      <div style="font-size: 13px; font-weight: bold; margin-bottom: 6px; color: var(--text);">📍 指定落地机房</div>
+                                      <select id="cf-region" class="cf-select">
+                                          <!-- JS 动态注入 -->
+                                      </select>
+                                  </div>
+                                  
+                                  <button onclick="window.submitCfPlacement()" style="width: 100%; background: #007aff; color: white; padding: 12px; border-radius: 8px; font-weight: bold; border: none; cursor: pointer; font-size: 14px; transition: 0.2s; box-shadow: 0 4px 12px rgba(0,122,255,0.2); margin-top: auto;">🚀 保存并调度</button>
                               </div>
-                              
-                              <button onclick="window.submitCfPlacement()" style="width: 100%; background: #007aff; color: white; padding: 12px; border-radius: 8px; font-weight: bold; border: none; cursor: pointer; font-size: 14px; transition: 0.2s; box-shadow: 0 4px 12px rgba(0,122,255,0.2);">🚀 保存并调度</button>
+                          </div>
+
+                          <!-- TG 设置 -->
+                          <div class="emby-card" data-search="telegram tg bot 设置 通知 播报" style="border: 1px solid var(--border);">
+                              <div class="card-header"><div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🤖 Telegram 通知</div></div></div>
+                              <div style="display:flex; flex-direction:column; gap:12px; margin-top:15px;">
+                                  
+                                  <div id="tg-token-badge" style="font-size: 12px; line-height: 1.5; padding: 10px; border-radius: 8px; border-left: 3px solid; transition: all 0.3s; display:none;"></div>
+
+                                  <div style="position: relative;">
+                                      <input type="password" id="tgToken" placeholder="TG Bot Token (输入将保存至面板数据库，随心改)" style="padding: 12px 42px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
+                                      <span class="svg-icon-btn eye-icon inactive" id="icon-tgToken" onclick="toggleTgVis('tgToken', 'icon-tgToken')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);" title="显示/隐藏">\${SVG_EYE}</span>
+                                  </div>
+
+                                  <div style="position: relative;">
+                                      <input type="password" id="tgChatId" placeholder="接收消息的 TG Chat ID" style="padding: 12px 42px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
+                                      <span class="svg-icon-btn eye-icon inactive" id="icon-tgChatId" onclick="toggleTgVis('tgChatId', 'icon-tgChatId')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);" title="显示/隐藏">\${SVG_EYE}</span>
+                                  </div>
+                                  
+                                  <div style="display:flex; align-items:center; color:var(--text); font-size:14px; margin-top:4px;">
+                                      <input type="checkbox" id="tgMaskToggle" class="toggle-switch" checked>
+                                      <label for="tgMaskToggle" style="cursor:pointer; user-select:none; line-height:1.4;">开启数据脱敏 (隐藏访客IP/未备注域名)</label>
+                                  </div>
+                                  
+                                  <div style="display:flex; align-items:center; color:var(--text); font-size:14px;">
+                                      <input type="checkbox" id="tgLogsToggle" class="toggle-switch" checked>
+                                      <label for="tgLogsToggle" style="cursor:pointer; user-select:none; line-height:1.4;">附加最近 5 次播放记录 (关闭可极简推送)</label>
+                                  </div>
+
+                                  <div style="display:flex; gap:10px; margin-top: 4px;">
+                                      <button onclick="saveTgSettings()" class="btn-edit" style="flex:1;">💾 保存配置</button>
+                                      <button onclick="testTgMessage()" class="btn-edit" style="flex:1; background:rgba(52,199,89,0.1); color:#34c759;">📊 发送连通测试</button>
+                                  </div>
+
+                                  <button onclick="activateTgWebhook()" class="btn-webhook-activate">
+                                      🚀 一键激活并绑定 TG 机器人
+                                  </button>
+
+                                  <div style="font-size: 12px; color: var(--text-sec); line-height: 1.5; margin-top: auto;">
+                                      * 激活成功后，在 TG 聊天框直接发送指令查岗：<br><b>/stats</b> (默认)、<b>/mini</b> (极简)、<b>/logs</b> (纯记录)、<b>/region</b> (切机房)。
+                                  </div>
+                              </div>
                           </div>
                       </div>
 
-                      <!-- TG 设置 -->
-                      <div class="emby-card" data-search="telegram tg bot 设置 通知 播报" style="margin-top: 20px; border: 1px solid var(--border);">
-                          <div class="card-header"><div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🤖 Telegram 通知</div></div></div>
-                          <div style="display:flex; flex-direction:column; gap:12px; margin-top:15px;">
-                              <div style="position: relative;">
-                                  <input type="password" id="tgToken" placeholder="TG Bot Token (留空将读取环境变量)" style="padding: 12px 42px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
-                                  <span class="svg-icon-btn eye-icon inactive" id="icon-tgToken" onclick="toggleTgVis('tgToken', 'icon-tgToken')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);" title="显示/隐藏">\${SVG_EYE}</span>
-                              </div>
-                              <div style="position: relative;">
-                                  <input type="password" id="tgChatId" placeholder="TG Chat ID (留空将读取环境变量)" style="padding: 12px 42px 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); width: 100%; box-sizing: border-box;">
-                                  <span class="svg-icon-btn eye-icon inactive" id="icon-tgChatId" onclick="toggleTgVis('tgChatId', 'icon-tgChatId')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);" title="显示/隐藏">\${SVG_EYE}</span>
-                              </div>
-                              
-                              <div style="display:flex; align-items:center; color:var(--text); font-size:14px; margin-top:4px;">
-                                  <input type="checkbox" id="tgMaskToggle" class="toggle-switch" checked>
-                                  <label for="tgMaskToggle" style="cursor:pointer; user-select:none; line-height:1.4;">开启数据脱敏 (开启后自动隐藏访客IP和未备注的域名)</label>
-                              </div>
-                              
-                              <div style="display:flex; align-items:center; color:var(--text); font-size:14px;">
-                                  <input type="checkbox" id="tgLogsToggle" class="toggle-switch" checked>
-                                  <label for="tgLogsToggle" style="cursor:pointer; user-select:none; line-height:1.4;">附加最近 5 次播放记录 (关闭后定时推送将变得极简小巧)</label>
-                              </div>
-
-                              <div style="display:flex; gap:10px; margin-top: 4px;">
-                                  <button onclick="saveTgSettings()" class="btn-edit" style="flex:1;">💾 保存配置</button>
-                                  <button onclick="testTgMessage()" class="btn-edit" style="flex:1; background:rgba(52,199,89,0.1); color:#34c759;">📊 发送测试报表</button>
-                              </div>
-                              <div style="font-size: 12px; color: var(--text-sec); line-height: 1.5; margin-top: 2px;">
-                                  * TG 新增四大专属查岗指令：<b>/stats</b> (默认报表)、<b>/mini</b> (极简报表)、<b>/logs</b> (纯净记录)、<b>/region</b> (随时随地秒切机房)。
-                              </div>
-                          </div>
-                      </div>
-
-                      <!-- 通用反代记录 -->
                       <div class="emby-card" data-search="通用反代 收集 库 记录" style="margin-top: 20px; border: 1px solid var(--border);">
                           <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: none; padding-bottom: 0;">
                               <div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🌍 通用反代地址收集库</div></div>
@@ -2255,7 +2361,6 @@ export default {
               \`;
 
               const observer = new MutationObserver(() => {
-                  // 修复点：加入终极保底机制，即使原版页面改版也能强行渲染出面板
                   let targetNode = document.getElementById('addForm') || document.getElementById('list-grid');
                   if (!targetNode) {
                       targetNode = document.querySelector('.main-content') || document.querySelector('.content-wrapper') || document.body;
@@ -2277,6 +2382,21 @@ export default {
                               if(d.chatId) document.getElementById('tgChatId').value = d.chatId;
                               document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
                               document.getElementById('tgLogsToggle').checked = d.logsEnabled !== false;
+
+                              const badge = document.getElementById('tg-token-badge');
+                              if (d.isEnvToken && !d.token) {
+                                  badge.style.display = 'block';
+                                  badge.innerHTML = "💡 <b>已读取 Cloudflare 环境变量 Token</b> (您无需在此处重复填写)";
+                                  badge.style.color = "#007aff";
+                                  badge.style.background = "rgba(0,122,255,0.05)";
+                                  badge.style.borderLeftColor = "#007aff";
+                              } else if (d.token) {
+                                  badge.style.display = 'block';
+                                  badge.innerHTML = "✅ <b>已使用面板 D1 数据库 Token</b> (随心修改，随时保存生效)";
+                                  badge.style.color = "#34c759";
+                                  badge.style.background = "rgba(52,199,89,0.05)";
+                                  badge.style.borderLeftColor = "#34c759";
+                              }
                           }
                       }).catch(e => { console.error("读取TG配置出错:", e); });
 
@@ -2332,6 +2452,9 @@ export default {
                   const res = await fetch('/api/cf-placement');
                   const d = await res.json();
                   if(d.success) {
+                      // 初始化大屏显示
+                      document.getElementById('ui-active-route').innerHTML = window.formatActiveNodeStr(d.mode);
+
                       if(d.mode && d.mode.region) {
                           let parts = d.mode.region.split(':');
                           document.getElementById('cf-mode').value = parts[0];
@@ -2377,7 +2500,7 @@ export default {
 
           window.submitCfPlacement = async function() {
               const modeVal = document.getElementById('cf-mode').value;
-              let placementObj = { mode: 'off' }; // 这里前端照常发，底层 Worker 会处理转换
+              let placementObj = { mode: 'off' };
               
               if (modeVal === 'smart') {
                   placementObj = { mode: 'smart' };
@@ -2391,6 +2514,15 @@ export default {
                   const d = await res.json();
                   if(d.success) {
                       window.showCfToast('✅ 调度切换成功，底层热更新已生效！');
+                      
+                      // 触发横幅更新动画并同步显示最新地址
+                      const banner = document.getElementById('status-banner');
+                      banner.classList.add('updating');
+                      setTimeout(() => {
+                          document.getElementById('ui-active-route').innerHTML = window.formatActiveNodeStr(placementObj);
+                          banner.classList.remove('updating');
+                      }, 200);
+
                   } else {
                       window.showCfToast('❌ 切换失败: ' + (d.error || '未知错误'));
                   }
@@ -2473,7 +2605,17 @@ export default {
               try {
                   const res = await fetch('/api/save-tg', { method: 'POST', body: JSON.stringify({ token, chatId, maskEnabled, logsEnabled }) });
                   const d = await res.json();
-                  if(d.success) window.showCfToast('✅ 保存成功');
+                  if(d.success) {
+                      window.showCfToast('✅ 配置保存成功！');
+                      const badge = document.getElementById('tg-token-badge');
+                      if (token) {
+                          badge.style.display = 'block';
+                          badge.innerHTML = "✅ <b>已使用面板 D1 数据库 Token</b> (随心修改，随时保存生效)";
+                          badge.style.color = "#34c759";
+                          badge.style.background = "rgba(52,199,89,0.05)";
+                          badge.style.borderLeftColor = "#34c759";
+                      }
+                  }
               } catch(e) { console.error("保存TG配置出错:", e); }
           };
 
@@ -2484,8 +2626,31 @@ export default {
               try {
                   const res = await fetch('/api/test-tg', { method: 'POST', body: JSON.stringify({ token, chatId, logsEnabled }) });
                   const d = await res.json();
-                  if(d.success) window.showCfToast('✅ 发送成功，请查看 TG');
+                  if(d.success) {
+                      window.showCfToast('✅ 发送成功，请查看您的 Telegram 客户端');
+                  } else {
+                      window.showCfToast('❌ 发送失败: ' + (d.error || '未知错误'));
+                  }
               } catch(e) { console.error("测试TG出错:", e); }
+          };
+
+          window.activateTgWebhook = async function() {
+              const token = document.getElementById('tgToken').value.trim();
+              window.showCfToast('⏳ 正在向 Telegram 发送绑定请求...');
+              try {
+                  const res = await fetch('/api/set-webhook', { 
+                      method: 'POST',
+                      body: JSON.stringify({ token: token })
+                  });
+                  const d = await res.json();
+                  if(d.success) {
+                      window.showCfToast('✅ 激活成功！机器人已和当前域名深度绑定');
+                  } else {
+                      window.showCfToast('❌ 激活失败: ' + (d.error || '未知错误'));
+                  }
+              } catch(e) {
+                  window.showCfToast('❌ 请求失败: ' + e.message);
+              }
           };
 
           window.renameEmby = async function(host, currentName) {
