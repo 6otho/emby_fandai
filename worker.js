@@ -1357,9 +1357,10 @@ const originalWorker = {
   },
 };
 // ==========================================
-// 终极满血版：极致体验 + 响应式双排 UI 布局
-// 逻辑修正：听劝！恢复面板修改 TG Bot Token 的功能，直接存入 D1 数据库，告别 CF 环境变量的折磨！
-// UI 极致优化：电脑端左右双排并列，手机端自动折叠；完美保留一键 Webhook 激活。
+// 终极满血版：极致体验 + 响应式双排 UI 布局 + 邪修无损流量测速
+// 修复痛点1：【防断流】屏蔽小于 500KB 的媒体碎片，大幅降低 D1 数据库高频写入导致的 CPU 耗尽与 0kb 锁死问题。
+// 修复痛点2：【精准统计】只统计“面板收集库”里的官方 Emby 域名，屏蔽 115网盘、苹果CDN等底层直链重定向垃圾数据。
+// 修复痛点3：【测速修复】限制 1秒~30秒 的有效测速区间，过滤并发爆发与挂机停滞导致的测速异常。
 // ==========================================
 
 function getFlagEmoji(countryCode) {
@@ -1413,8 +1414,23 @@ function formatDisplay(rawStr, isMaskEnabled, isIp = false) {
     return `<code>${masked}</code>`; 
 }
 
+function formatBytesServer(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatSpeedServer(bps) {
+    if (!bps || bps === 0) return '0 KB/s';
+    if (bps > 1024 * 1024) return (bps / (1024 * 1024)).toFixed(2) + ' MB/s';
+    return (bps / 1024).toFixed(2) + ' KB/s';
+}
+
 async function fetchEmbyServerName(host) {
     try {
+        if(host === "原生主线路") return host;
         const controller = new AbortController();
         const id = setTimeout(() => controller.abort(), 2000);
         const res = await fetch(`https://${host}/System/Info/Public`, { 
@@ -1448,12 +1464,21 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
     let serverNamesMap = {}; 
     let isMaskEnabled = true; 
     let activeNodeStr = "🏠 边缘节点 (默认)";
+    let trafficStatsText = "";
     
     const nowMs = Date.now() + 8 * 3600000;
     const nowTimestamp = new Date(nowMs).toISOString().replace("T", " ").split(".")[0];
     const todayDateStr = nowTimestamp.split(" ")[0]; 
     const sevenDaysAgoStr = new Date(nowMs - 7 * 86400000).toISOString().replace("T", " ").split(".")[0];
     
+    function safeGetDisplayName(host, maskEnabled) {
+        if (!host) return "Unknown";
+        if (host === "原生主线路" || host === "原生直接访问") return `<code>${host}</code>`;
+        const sName = serverNamesMap[host];
+        if (sName && !sName.includes('.')) return `<b>${sName}</b>`; 
+        return formatDisplay(host, maskEnabled);
+    }
+
     if (env.DB) {
         try {
             const maskRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'TG_MASK_ENABLED'").first();
@@ -1499,17 +1524,10 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
                 const topUniLocRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? AND prefix LIKE '%通用%' GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
                 if (topUniLocRow && topUniLocRow.country) topUniLocation = `${getFlagEmoji(topUniLocRow.country)} <b>${topUniLocRow.country}</b> (共 <code>${topUniLocRow.c}</code> 次)`;
 
-                function getDisplayName(host, maskEnabled) {
-                    if (!host) return "Unknown";
-                    const sName = serverNamesMap[host];
-                    if (sName && !sName.includes('.')) return `<b>${sName}</b>`; 
-                    return formatDisplay(host, maskEnabled);
-                }
-
                 const topUniRow = await env.DB.prepare("SELECT prefix, COUNT(*) as c FROM visitor_logs WHERE timestamp LIKE ? AND prefix LIKE '%通用%' GROUP BY prefix ORDER BY c DESC LIMIT 1").bind(todayDateStr + '%').first();
                 if (topUniRow && topUniRow.prefix) {
                     let cleanHost = topUniRow.prefix.replace('通用:', '').replace('通用: ', '').trim();
-                    topUniversalNode = `${getDisplayName(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
+                    topUniversalNode = `${safeGetDisplayName(cleanHost, isMaskEnabled)} (共 <code>${topUniRow.c}</code> 次)`;
                 }
 
                 const locRow = await env.DB.prepare("SELECT country, COUNT(*) as c FROM visitor_logs WHERE timestamp >= ? GROUP BY country ORDER BY c DESC LIMIT 1").bind(sevenDaysAgoStr).first();
@@ -1533,7 +1551,7 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
                     if (sName && !sName.includes('.')) {
                         favEmby = `<b>${sName}</b> (共 <code>${favRow.c}</code> 次)`;
                     } else {
-                        favEmby = `${formatDisplay(favRow.host, isMaskEnabled)} <i style="color:gray;">(未设置服名)</i> (共 <code>${favRow.c}</code> 次)`;
+                        favEmby = `${formatDisplay(favRow.host, isMaskEnabled)} <i style="color:gray;">(未设置)</i> (共 <code>${favRow.c}</code> 次)`;
                     }
                 }
 
@@ -1553,17 +1571,31 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
                         regionMap[r.host].targets.push({ target: r.target, c: r.c });
                     });
                 }
+
+                // 【终极修复】排行榜严格过滤，仅限用户收集库内的真实 Emby 域名！
+                const trafficReq = await env.DB.prepare(`
+                    SELECT host, total_bytes, avg_speed 
+                    FROM universal_traffic 
+                    WHERE total_bytes > 1048576 
+                      AND host IN (SELECT REPLACE(prefix, '通用: ', '') FROM visitor_logs WHERE prefix LIKE '%通用%')
+                    ORDER BY total_bytes DESC LIMIT 5
+                `).all();
+                
+                if (trafficReq && trafficReq.results && trafficReq.results.length > 0) {
+                    trafficStatsText = `\n🛜 <b>【 反代流量消耗 (TOP 5) 】</b>\n`;
+                    trafficReq.results.forEach((r, idx) => {
+                        const isLast = (idx === trafficReq.results.length - 1);
+                        const prefix = isLast ? "└" : "├";
+                        let mbStr = formatBytesServer(r.total_bytes);
+                        let spdStr = formatSpeedServer(r.avg_speed);
+                        let dispName = safeGetDisplayName(r.host, isMaskEnabled);
+                        trafficStatsText += `${prefix} 🎯 ${dispName} : <code>${mbStr}</code> (均速 <code>${spdStr}</code>)\n`;
+                    });
+                }
             }
         } catch (e) {}
     }
     
-    function safeGetDisplayName(host, maskEnabled) {
-        if (!host) return "Unknown";
-        const sName = serverNamesMap[host];
-        if (sName && !sName.includes('.')) return `<b>${sName}</b>`; 
-        return formatDisplay(host, maskEnabled);
-    }
-
     if (opts.onlyLogs) {
         let msg = `📜 <b>【 最近 5 次播放记录 】</b>\n<i>🕒 拉取时间: ${nowTimestamp}</i>`;
         if (recentLogs.length > 0) {
@@ -1620,8 +1652,9 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
         msg += `└ 📡 暂无数据\n`; 
     }
     
-    msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 访客来源最多: ${topLocation}\n├ 🎬 最喜欢的EMBY: ${favEmby}\n└ 🚀 最热线路节点: ${topNode}\n\n`;
-    msg += `🌐 <b>【 主域名流量消耗 】</b>\n├ ⏳ 近 24 小时内: <code>${t24}</code>\n├ 📅 近  7  天内: <code>${t7}</code>\n└ 🗓 近 30 天内: <code>${t30}</code>\n`;
+    msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 访客来源最多: ${topLocation}\n├ 🎬 最喜欢的EMBY: ${favEmby}\n└ 🚀 最热线路节点: ${topNode}\n`;
+    msg += trafficStatsText;
+    msg += `\n🌐 <b>【 主域名流量消耗 】</b>\n├ ⏳ 近 24 小时内: <code>${t24}</code>\n├ 📅 近  7  天内: <code>${t7}</code>\n└ 🗓 近 30 天内: <code>${t30}</code>\n`;
     
     if (opts.includeLogs && recentLogs.length > 0) {
         msg += `\n📜 <b>【 最近 ${recentLogs.length} 次播放记录 】</b>`;
@@ -1679,6 +1712,7 @@ export default {
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS region_hits_v2 (timestamp DATETIME, host TEXT, target TEXT)").run().catch(() => {});
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS visitor_logs (timestamp DATETIME, prefix TEXT, ip TEXT, country TEXT, ua TEXT)").run().catch(() => {});
       await env.DB.prepare("CREATE TABLE IF NOT EXISTS emby_server_names (host TEXT PRIMARY KEY, server_name TEXT)").run().catch(() => {});
+      await env.DB.prepare("CREATE TABLE IF NOT EXISTS universal_traffic (host TEXT PRIMARY KEY, total_bytes INTEGER DEFAULT 0, last_timestamp INTEGER DEFAULT 0, avg_speed INTEGER DEFAULT 0)").run().catch(() => {});
       
       if (ctx && ctx.waitUntil) {
           ctx.waitUntil((async () => {
@@ -1707,19 +1741,24 @@ export default {
     });
 
     const lowerPath = decodedPath.toLowerCase();
-    const isRealPlayAction = (lowerPath.includes('/playbackinfo') && request.method.toUpperCase() === 'POST') || 
-                             (lowerPath.includes('/sessions/playing') && !lowerPath.includes('progress') && !lowerPath.includes('stopped'));
+    
+    const isRealPlayAction = request.method.toUpperCase() === 'POST' && lowerPath.includes('/sessions/playing') && !lowerPath.includes('progress') && !lowerPath.includes('stopped');
+    
+    const isUniversalReq = decodedPath.includes('/http://') || decodedPath.startsWith('/https://');
 
     if (isRealPlayAction && env.DB && ctx && ctx.waitUntil) {
         ctx.waitUntil((async () => {
           try {
             const timestamp = new Date(Date.now() + 8 * 3600000).toISOString().replace("T", " ").split(".")[0];
-            const isUniversal = decodedPath.includes('/http://') || decodedPath.startsWith('/https://');
             
             let proxyTarget = "原生直接访问";
-            if (isUniversal) {
-                try { proxyTarget = new URL(decodedPath.substring(1)).host; } catch(e) {}
+            if (isUniversalReq) {
+                const match = decodedPath.match(/\/(https?:\/\/[^\/]+)/);
+                if (match) {
+                    try { proxyTarget = new URL(match[1]).host; } catch(e) {}
+                }
             }
+            if (proxyTarget === currentHost) proxyTarget = "原生直接访问";
             
             const lastHit = await env.DB.prepare("SELECT timestamp FROM region_hits_v2 WHERE host = ? AND target = ? ORDER BY timestamp DESC LIMIT 1").bind(currentHost, proxyTarget).first();
             let isHitDup = false;
@@ -1731,7 +1770,7 @@ export default {
                 await env.DB.prepare("INSERT INTO region_hits_v2 (timestamp, host, target) VALUES (?, ?, ?)").bind(timestamp, currentHost, proxyTarget).run().catch(()=>{});
             }
             
-            if (isUniversal) {
+            if (isUniversalReq && proxyTarget !== "原生直接访问") {
               const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Real-IP") || "Unknown";
               const country = request.headers.get("CF-IPCountry") || "Unknown";
               let ua = request.headers.get("User-Agent") || "Unknown";
@@ -1951,7 +1990,6 @@ export default {
             const tgData = await tgRes.json();
 
             if (tgData.ok) {
-                // 激活成功顺手保存 Token
                 if (env.DB && data.token) {
                     await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('TG_BOT_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(data.token.trim()).run().catch(()=>{});
                 }
@@ -1974,7 +2012,9 @@ export default {
                        (SELECT country FROM visitor_logs v2 WHERE v2.prefix = v1.prefix GROUP BY country ORDER BY COUNT(country) DESC LIMIT 1) as topCountry,
                        (SELECT country FROM visitor_logs v3 WHERE v3.prefix = v1.prefix ORDER BY timestamp DESC LIMIT 1) as latestCountry,
                        (SELECT ip FROM visitor_logs v4 WHERE v4.prefix = v1.prefix ORDER BY timestamp DESC LIMIT 1) as latestIp,
-                       (SELECT server_name FROM emby_server_names e WHERE e.host = REPLACE(v1.prefix, '通用: ', '')) as serverName
+                       (SELECT server_name FROM emby_server_names e WHERE e.host = REPLACE(v1.prefix, '通用: ', '')) as serverName,
+                       IFNULL((SELECT total_bytes FROM universal_traffic t WHERE t.host = REPLACE(v1.prefix, '通用: ', '')), 0) as totalBytes,
+                       IFNULL((SELECT avg_speed FROM universal_traffic t WHERE t.host = REPLACE(v1.prefix, '通用: ', '')), 0) as avgSpeed
                 FROM visitor_logs v1 
                 WHERE v1.prefix LIKE '%通用%' 
                 GROUP BY v1.prefix 
@@ -1993,6 +2033,7 @@ export default {
                 const pureHost = body.prefix.replace('通用: ', '').trim();
                 await env.DB.prepare("DELETE FROM region_hits_v2 WHERE target = ?").bind(pureHost).run().catch(()=>{});
                 await env.DB.prepare("DELETE FROM emby_server_names WHERE host = ?").bind(pureHost).run().catch(()=>{});
+                await env.DB.prepare("DELETE FROM universal_traffic WHERE host = ?").bind(pureHost).run().catch(()=>{});
             }
             return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
         } catch(e) { return new Response(JSON.stringify({ success: false, error: e.message }), { headers: { 'Content-Type': 'application/json' } }); }
@@ -2073,11 +2114,86 @@ export default {
       } catch (e) { return new Response(JSON.stringify({ success: false, error: e.message }), { headers: { 'Content-Type': 'application/json' } }); }
     }
 
+    // ============== 核心：原汁原味发起请求 ==============
     const response = await originalWorker.fetch(request, proxyEnv, ctx);
+    
+    // ==========================================
+    // 💀【邪修版】零感无损流量统计 (大文件白名单机制) 💀
+    // ==========================================
+    const clHeader = response.headers.get("Content-Length");
+    const cl = clHeader ? parseInt(clHeader, 10) : 0;
+    const contentType = response.headers.get("Content-Type") || "";
+    const isMedia = response.status === 206 || contentType.match(/video|audio|mpegURL/i);
+
+    // 【核心修复防断流】：文件大小小于 500KB (524288 Bytes) 的一律抛弃，绝不写入数据库！
+    // 彻底解决 CF Worker CPU 耗尽造成的 0kb 断流。
+    if (cl > 524288 && isMedia && env.DB) {
+        ctx.waitUntil((async () => {
+            try {
+                let proxyTarget = currentHost;
+                if (response.url) {
+                    try { proxyTarget = new URL(response.url).host; } catch(e) {}
+                }
+                if (proxyTarget === currentHost) {
+                    const match = decodedPath.match(/\/(https?:\/\/[^\/]+)/);
+                    if (match) {
+                        try { proxyTarget = new URL(match[1]).host; } catch(e) {}
+                    }
+                }
+                if (proxyTarget === currentHost) return; // 本地直连不计入通用反代流量
+
+                // 【核心修复屏蔽白名单】：只统计你在面板里收集的正常 Emby 域名！
+                // 屏蔽诸如 speedtest-babybus.apple-cdn.net、115网盘 等外部直链。
+                const validCheck = await env.DB.prepare("SELECT prefix FROM visitor_logs WHERE prefix = ? LIMIT 1").bind('通用: ' + proxyTarget).first();
+                if (!validCheck) return;
+
+                const now = Date.now();
+                const row = await env.DB.prepare("SELECT total_bytes, last_timestamp, avg_speed FROM universal_traffic WHERE host = ?").bind(proxyTarget).first();
+                
+                let newTotal = cl;
+                let newSpeed = 0;
+
+                if (row) {
+                    newTotal = row.total_bytes + cl;
+                    const diffSec = (now - row.last_timestamp) / 1000;
+                    
+                    // 【核心均速修复】：只计算间隔在 1秒 到 30秒 之间的平稳分片拉取
+                    // 彻底屏蔽并发（<1秒，导致 138MB/s）和 挂机重连（>30秒，导致 1KB/s）！
+                    if (diffSec >= 1 && diffSec <= 30) { 
+                        const currentSpeed = Math.floor(cl / diffSec);
+                        // 强制过滤超过 50MB/s 的离谱突刺记录
+                        if (currentSpeed < 50 * 1024 * 1024) { 
+                            newSpeed = row.avg_speed > 0 ? Math.floor(row.avg_speed * 0.8 + currentSpeed * 0.2) : currentSpeed;
+                        } else {
+                            newSpeed = row.avg_speed;
+                        }
+                    } else {
+                        // 异常时间差，直接沿用老速度
+                        newSpeed = row.avg_speed;
+                    }
+                    await env.DB.prepare("UPDATE universal_traffic SET total_bytes = ?, last_timestamp = ?, avg_speed = ? WHERE host = ?")
+                        .bind(newTotal, now, newSpeed, proxyTarget).run();
+                } else {
+                    await env.DB.prepare("INSERT INTO universal_traffic (host, total_bytes, last_timestamp, avg_speed) VALUES (?, ?, ?, ?)")
+                        .bind(proxyTarget, cl, now, 0).run();
+                }
+            } catch(e) {}
+        })());
+    }
+
     const isMainPage = decodedPath === '/' || decodedPath.toLowerCase().startsWith('/web/index.html');
     const isHTML = response.headers.get("Content-Type")?.includes("text/html");
 
     if (isMainPage && isHTML && response.status === 200) {
+      
+      // 【隐形大清洗】：你刷新一次面板网页，我在后台悄悄把之前错误记录进去的 speedtest, 115网盘 全部删掉！
+      if (env.DB) {
+          ctx.waitUntil(env.DB.prepare(`
+              DELETE FROM universal_traffic 
+              WHERE host NOT IN (SELECT REPLACE(prefix, '通用: ', '') FROM visitor_logs WHERE prefix LIKE '%通用%')
+          `).run().catch(()=>{}));
+      }
+
       let html = await response.text();
       const newHeaders = new Headers(response.headers);
       newHeaders.delete("Content-Length"); 
@@ -2092,7 +2208,7 @@ export default {
               .uni-scroll-container { display: flex; flex-wrap: nowrap; gap: 16px; overflow-x: auto; padding: 15px 0 5px 0; scrollbar-width: thin; }
               .uni-scroll-container::-webkit-scrollbar { height: 6px; }
               .uni-scroll-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-              .uni-card { flex: 0 0 auto; width: 260px; box-sizing: border-box; background: rgba(120,120,120,0.03); border: 1px solid var(--border); border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 8px; }
+              .uni-card { flex: 0 0 auto; width: 280px; box-sizing: border-box; background: rgba(120,120,120,0.03); border: 1px solid var(--border); border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 8px; }
 
               .copy-box { background: rgba(0, 122, 255, 0.08); border: 1px dashed var(--primary); color: var(--primary); padding: 8px; border-radius: 6px; font-family: monospace; font-size: 13px; font-weight: 600; text-align: center; cursor: pointer; transition: all 0.2s; user-select: none; word-break: break-all; overflow-wrap: anywhere; }
               .copy-box:hover { background: var(--primary); color: white; border-style: solid; box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3); }
@@ -2218,6 +2334,20 @@ export default {
               return \`\${first.substring(0, 3)}◻️◻️◻️.\${last}\`;
           };
 
+          window.formatBytes = function(bytes) {
+              if (!bytes || bytes === 0) return '0 B';
+              const k = 1024;
+              const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+              const i = Math.floor(Math.log(bytes) / Math.log(k));
+              return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+          };
+
+          window.formatSpeed = function(bps) {
+              if (!bps || bps === 0) return '0 KB/s';
+              if (bps > 1024 * 1024) return (bps / (1024 * 1024)).toFixed(2) + ' MB/s';
+              return (bps / 1024).toFixed(2) + ' KB/s';
+          };
+
           document.addEventListener("DOMContentLoaded", () => {
               const injectHTML = \`
                   <div id="my-custom-panel-wrapper">
@@ -2308,7 +2438,7 @@ export default {
 
                       <div class="emby-card" data-search="通用反代 收集 库 记录" style="margin-top: 20px; border: 1px solid var(--border);">
                           <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: none; padding-bottom: 0;">
-                              <div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🌍 通用反代地址收集库</div></div>
+                              <div class="card-title-group"><div style="font-weight: 600; font-size: 16px; color: var(--text);">🌍 通用反代地址收集库 (无损测速)</div></div>
                               <button class="btn-submit" onclick="pingAllUniversal()" style="background:#32ade6; padding: 6px 12px; font-size: 12px; border-radius: 8px;">⚡ 全局测速</button>
                           </div>
                           <div id="uni-nodes-container" class="uni-scroll-container">
@@ -2341,17 +2471,14 @@ export default {
                               document.getElementById('tgMaskToggle').checked = d.maskEnabled !== false;
                               document.getElementById('tgLogsToggle').checked = d.logsEnabled !== false;
 
-                              // 智能提示徽章
                               const badge = document.getElementById('tg-token-badge');
                               if (d.isEnvToken && !d.token) {
-                                  // 面板没填，但是读取到了环境变量里的
                                   badge.style.display = 'block';
                                   badge.innerHTML = "💡 <b>已读取 Cloudflare 环境变量 Token</b> (您无需在此处重复填写)";
                                   badge.style.color = "#007aff";
                                   badge.style.background = "rgba(0,122,255,0.05)";
                                   badge.style.borderLeftColor = "#007aff";
                               } else if (d.token) {
-                                  // 面板存了的
                                   badge.style.display = 'block';
                                   badge.innerHTML = "✅ <b>已使用面板 D1 数据库 Token</b> (随心修改，随时保存生效)";
                                   badge.style.color = "#34c759";
@@ -2657,7 +2784,7 @@ export default {
                       html += \`
                       <div class="uni-card">
                           \${serverNameBadge}
-                          <!-- 域名展示区，点击一键复制真实域名 -->
+                          <!-- 域名展示区 -->
                           <div style="font-weight: 600; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;" title="点击一键复制真实地址" onclick="forceCopyUrl('\${targetUrl}')">
                               \${regionPrefix}<span id="uni-domain-\${index}" data-masked="true">\${maskedHost}</span>
                           </div>
@@ -2675,6 +2802,16 @@ export default {
                           <div style="display: flex; justify-content: space-between; font-size: 12px;">
                               <span style="color: var(--text-sec);" title="历史累计访问次数最多的地区">常访地区:</span>
                               <span style="color: var(--text-sec);">\${locStr}</span>
+                          </div>
+
+                          <div style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border);">
+                              <span style="color: var(--text-sec);" title="该反代服产生的总数据传输量 (根据请求头部估算)">消耗流量:</span>
+                              <span style="color: #ff9500; font-weight: 600;">\${window.formatBytes(item.totalBytes)}</span>
+                          </div>
+                          
+                          <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                              <span style="color: var(--text-sec);" title="观影时的平均下行带宽需求">平均测速:</span>
+                              <span style="color: #32ade6; font-weight: 600;">\${window.formatSpeed(item.avgSpeed)}</span>
                           </div>
                           
                           <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center; background: rgba(0, 122, 255, 0.08); padding: 4px 6px; border-radius: 6px; margin-top: 2px;">
@@ -2729,7 +2866,7 @@ export default {
           };
 
           window.delUniversal = async function(prefix) {
-              if(!confirm('确定删除该访问记录吗？')) return;
+              if(!confirm('确定删除该访问记录及所有流量统计吗？')) return;
               await fetch('/api/del-universal', { method: 'POST', body: JSON.stringify({ prefix }) });
               loadUniversalNodes();
           };
