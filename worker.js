@@ -1358,10 +1358,13 @@ const originalWorker = {
 };
 // ==========================================
 // 终极满血版：极致体验 + 响应式双排 UI 布局 + 邪修无损流量测速
-// 修复痛点1：【防断流】屏蔽小于 500KB 的媒体碎片，大幅降低 D1 数据库高频写入导致的 CPU 耗尽与 0kb 锁死问题。
-// 修复痛点2：【精准统计】只统计“面板收集库”里的官方 Emby 域名，屏蔽 115网盘、苹果CDN等底层直链重定向垃圾数据。
-// 修复痛点3：【测速修复】限制 1秒~30秒 的有效测速区间，过滤并发爆发与挂机停滞导致的测速异常。
+// UI 进化：完美融合【负载次数】与【累计流量消耗】，告别长篇大论，一目了然！
+// 修复痛点1：【设备 UA 神级修复】引入内存级 UA 瞬时捕获 + Apple/Android 阵营绝对隔离，告别 iPhone 识别成安卓，完美还原详细设备名！
+// 修复痛点2：【断流与膨胀修复】封顶单次分片流量（最大25MB），修复并发/挂机造成的均速飙高。
+// 修复痛点3：【过滤脏数据】彻底屏蔽 115网盘、CDN、测速节点等底层挂载直链。
 // ==========================================
+
+if (!globalThis.ipUaCache) globalThis.ipUaCache = new Map();
 
 function getFlagEmoji(countryCode) {
     if (!countryCode || countryCode === 'Unknown' || countryCode === 'XX') return '❓';
@@ -1458,13 +1461,18 @@ async function getCfCredentials(env) {
     return { accId, wName, cfToken };
 }
 
+// 核心：过滤垃圾 CDN/网盘 域名，只统计真正的 Emby 节点
+const isJunkDomain = (host) => {
+    return /speedtest|115|cdn|alicdn|aliyundrive|quark|kuaishou|baidu|apple|127\.0|localhost/i.test(host);
+};
+
 async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: false }) {
     let todayCount = 0, universalCount = 0, topUniversalNode = "无记录", topUniLocation = "无记录", topLocation = "无记录", topNode = "无记录", favEmby = "无记录", recentLogs = [];
     let regionMap = {};
     let serverNamesMap = {}; 
+    let trafficMap = {}; 
     let isMaskEnabled = true; 
     let activeNodeStr = "🏠 边缘节点 (默认)";
-    let trafficStatsText = "";
     
     const nowMs = Date.now() + 8 * 3600000;
     const nowTimestamp = new Date(nowMs).toISOString().replace("T", " ").split(".")[0];
@@ -1572,24 +1580,16 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
                     });
                 }
 
-                // 【终极修复】排行榜严格过滤，仅限用户收集库内的真实 Emby 域名！
                 const trafficReq = await env.DB.prepare(`
                     SELECT host, total_bytes, avg_speed 
                     FROM universal_traffic 
                     WHERE total_bytes > 1048576 
                       AND host IN (SELECT REPLACE(prefix, '通用: ', '') FROM visitor_logs WHERE prefix LIKE '%通用%')
-                    ORDER BY total_bytes DESC LIMIT 5
                 `).all();
                 
-                if (trafficReq && trafficReq.results && trafficReq.results.length > 0) {
-                    trafficStatsText = `\n🛜 <b>【 反代流量消耗 (TOP 5) 】</b>\n`;
-                    trafficReq.results.forEach((r, idx) => {
-                        const isLast = (idx === trafficReq.results.length - 1);
-                        const prefix = isLast ? "└" : "├";
-                        let mbStr = formatBytesServer(r.total_bytes);
-                        let spdStr = formatSpeedServer(r.avg_speed);
-                        let dispName = safeGetDisplayName(r.host, isMaskEnabled);
-                        trafficStatsText += `${prefix} 🎯 ${dispName} : <code>${mbStr}</code> (均速 <code>${spdStr}</code>)\n`;
+                if (trafficReq && trafficReq.results) {
+                    trafficReq.results.forEach(r => {
+                        trafficMap[r.host] = { bytes: r.total_bytes, speed: r.avg_speed };
                     });
                 }
             }
@@ -1626,7 +1626,8 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
     let msg = `📊 <b>Emby 全局播放数据统计报表</b>\n<i>🕒 统计时间: ${nowTimestamp}</i>\n\n`;
     msg += `📈 <b>【 播放数据 (今日累计) 】</b>\n├ 🔀 调度状态: <b>${activeNodeStr}</b>\n├ ▶️ 总播放次数: <code>${todayCount}</code> 次\n├ 🔗 通用反代: <code>${universalCount}</code> 次\n├ 🌍 访客来源最多: ${topUniLocation}\n└ 🔥 最热反代目标: ${topUniversalNode}\n\n`;
     
-    msg += `📍 <b>【 节点访问负载 (今日累计) 】</b>\n`;
+    // 完美合体：访问负载 + 累计流量
+    msg += `📍 <b>【 节点负载与流量 (次数 | 累计消耗) 】</b>\n`;
     const hosts = Object.keys(regionMap);
     if (hosts.length > 0) { 
         hosts.forEach((host, idx) => { 
@@ -1640,11 +1641,18 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
             rData.targets.forEach((t, tidx) => {
                 let isLastTarget = (tidx === rData.targets.length - 1);
                 let targetPrefix = isLastTarget ? "└" : "├";
+                
                 if (t.target === '原生直接访问') {
-                    msg += `${childLine}${targetPrefix} 🏠 原生直接访问 : <code>${t.c}</code> 次\n`;
+                    msg += `${childLine}${targetPrefix} 🏠 原生直接访问 : <code>${t.c}</code>次\n`;
                 } else {
                     let dispTarget = safeGetDisplayName(t.target, isMaskEnabled);
-                    msg += `${childLine}${targetPrefix} 🎯 反代至 ${dispTarget} : <code>${t.c}</code> 次\n`;
+                    let trafficStr = "";
+                    if (trafficMap[t.target] && trafficMap[t.target].bytes > 1048576) {
+                        let mbStr = formatBytesServer(trafficMap[t.target].bytes);
+                        let spdStr = formatSpeedServer(trafficMap[t.target].speed);
+                        trafficStr = ` | <code>${mbStr}</code> (<code>${spdStr}</code>)`;
+                    }
+                    msg += `${childLine}${targetPrefix} 🎯 反代至 ${dispTarget} : <code>${t.c}</code>次${trafficStr}\n`;
                 }
             });
         }); 
@@ -1653,8 +1661,8 @@ async function generateTgReport(env, ctx, opts = { includeLogs: true, onlyLogs: 
     }
     
     msg += `\n🏆 <b>【 热门统计 (近7天) 】</b>\n├ 🌍 访客来源最多: ${topLocation}\n├ 🎬 最喜欢的EMBY: ${favEmby}\n└ 🚀 最热线路节点: ${topNode}\n`;
-    msg += trafficStatsText;
-    msg += `\n🌐 <b>【 主域名流量消耗 】</b>\n├ ⏳ 近 24 小时内: <code>${t24}</code>\n├ 📅 近  7  天内: <code>${t7}</code>\n└ 🗓 近 30 天内: <code>${t30}</code>\n`;
+    
+    msg += `\n🌐 <b>【 主域名流量消耗 (CF边缘总计) 】</b>\n├ ⏳ 近 24 小时内: <code>${t24}</code>\n├ 📅 近  7  天内: <code>${t7}</code>\n└ 🗓 近 30 天内: <code>${t30}</code>\n`;
     
     if (opts.includeLogs && recentLogs.length > 0) {
         msg += `\n📜 <b>【 最近 ${recentLogs.length} 次播放记录 】</b>`;
@@ -1742,8 +1750,19 @@ export default {
 
     const lowerPath = decodedPath.toLowerCase();
     
-    const isRealPlayAction = request.method.toUpperCase() === 'POST' && lowerPath.includes('/sessions/playing') && !lowerPath.includes('progress') && !lowerPath.includes('stopped');
+    // ==========================================
+    // 瞬时内存记录：提前捕获完美 UA，专门伺候 EplayerX 等应用！
+    // ==========================================
+    const userIP = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Real-IP") || "Unknown";
+    let currentUa = request.headers.get("User-Agent") || "Unknown";
+    let isJunkUa = /cfnetwork|darwin|stagefright|exoplayer|okhttp|lavf/i.test(currentUa);
     
+    if (!isJunkUa && currentUa.length > 15) {
+        if (globalThis.ipUaCache.size > 500) globalThis.ipUaCache.clear();
+        globalThis.ipUaCache.set(userIP, currentUa);
+    }
+    
+    const isRealPlayAction = request.method.toUpperCase() === 'POST' && lowerPath.includes('/sessions/playing') && !lowerPath.includes('progress') && !lowerPath.includes('stopped');
     const isUniversalReq = decodedPath.includes('/http://') || decodedPath.startsWith('/https://');
 
     if (isRealPlayAction && env.DB && ctx && ctx.waitUntil) {
@@ -1759,7 +1778,8 @@ export default {
                 }
             }
             if (proxyTarget === currentHost) proxyTarget = "原生直接访问";
-            
+            if (isJunkDomain(proxyTarget)) return; // 彻底屏蔽直链
+
             const lastHit = await env.DB.prepare("SELECT timestamp FROM region_hits_v2 WHERE host = ? AND target = ? ORDER BY timestamp DESC LIMIT 1").bind(currentHost, proxyTarget).first();
             let isHitDup = false;
             if (lastHit && lastHit.timestamp) {
@@ -1771,32 +1791,63 @@ export default {
             }
             
             if (isUniversalReq && proxyTarget !== "原生直接访问") {
-              const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Real-IP") || "Unknown";
               const country = request.headers.get("CF-IPCountry") || "Unknown";
-              let ua = request.headers.get("User-Agent") || "Unknown";
               const prefixStr = "通用: " + proxyTarget;
               
-              let isJunkUa = /cfnetwork|darwin|stagefright|exoplayer|okhttp|lavf/i.test(ua);
+              // ==========================================
+              // 神级 UA 提取与跨阵营绝对隔离
+              // ==========================================
+              let finalUa = currentUa;
               if (isJunkUa) {
-                  const knownGood = await env.DB.prepare("SELECT ua FROM visitor_logs WHERE ip = ? AND ua NOT LIKE '%CFNetwork%' AND ua NOT LIKE '%Darwin%' AND ua NOT LIKE '%stagefright%' AND ua NOT LIKE '%ExoPlayer%' ORDER BY timestamp DESC LIMIT 1").bind(ip).first();
-                  if (knownGood && knownGood.ua) {
-                      ua = knownGood.ua; 
+                  let platform = "";
+                  let ualow = finalUa.toLowerCase();
+                  if (ualow.includes("darwin") || ualow.includes("cfnetwork") || ualow.includes("eplayer")) platform = "apple";
+                  else if (ualow.includes("okhttp") || ualow.includes("exoplayer") || ualow.includes("stagefright")) platform = "android";
+
+                  // 第一优先级：直接从刚才存入的瞬时内存里提取完美的详细 UA
+                  let cachedUa = globalThis.ipUaCache.get(userIP);
+                  let useCache = false;
+                  if (cachedUa) {
+                      let cLow = cachedUa.toLowerCase();
+                      if (platform === "apple" && (cLow.includes("iphone") || cLow.includes("ipad") || cLow.includes("mac") || cLow.includes("apple") || cLow.includes("ios") || cLow.includes("eplayerx"))) useCache = true;
+                      else if (platform === "android" && (cLow.includes("android") || cLow.includes("linux"))) useCache = true;
+                      else if (platform === "") useCache = true;
+                      
+                      if (useCache) finalUa = cachedUa;
+                  }
+
+                  // 第二优先级：内存没了，去历史记录里翻（附加阵营绝对隔离，绝不串台）
+                  if (!useCache) {
+                      const knownGoodList = await env.DB.prepare("SELECT ua FROM visitor_logs WHERE ip = ? AND ua NOT LIKE '%CFNetwork%' AND ua NOT LIKE '%Darwin%' AND ua NOT LIKE '%stagefright%' AND ua NOT LIKE '%ExoPlayer%' AND ua NOT LIKE '%okhttp%' ORDER BY timestamp DESC LIMIT 5").bind(userIP).all();
+                      if (knownGoodList && knownGoodList.results) {
+                          for (let r of knownGoodList.results) {
+                              let rLow = r.ua.toLowerCase();
+                              if (platform === "apple" && (rLow.includes("iphone") || rLow.includes("ipad") || rLow.includes("mac") || rLow.includes("apple") || rLow.includes("ios") || rLow.includes("eplayerx"))) {
+                                  finalUa = r.ua; break;
+                              }
+                              if (platform === "android" && (rLow.includes("android") || rLow.includes("linux"))) {
+                                  finalUa = r.ua; break;
+                              }
+                          }
+                      }
                   }
               }
-              
-              const lastLog = await env.DB.prepare("SELECT timestamp, ua FROM visitor_logs WHERE ip = ? AND prefix = ? ORDER BY timestamp DESC LIMIT 1").bind(ip, prefixStr).first();
+              // 放宽截取限制到 68，确保完整显示 "EplayerX/10.0.8 (iPhone 14;iOS 26.5; Apple)"
+              if (finalUa.length > 68) finalUa = finalUa.substring(0, 65) + '...';
+
+              const lastLog = await env.DB.prepare("SELECT timestamp, ua FROM visitor_logs WHERE ip = ? AND prefix = ? ORDER BY timestamp DESC LIMIT 1").bind(userIP, prefixStr).first();
               let isLogDup = false;
               
               if (lastLog && lastLog.timestamp) {
                   const lastMs = new Date(lastLog.timestamp.replace(" ", "T") + "+08:00").getTime();
                   if (Date.now() - lastMs < 60000) {
                       isLogDup = true;
-                      await env.DB.prepare("UPDATE visitor_logs SET ua = ?, timestamp = ? WHERE ip = ? AND prefix = ? AND timestamp = ?").bind(ua, timestamp, ip, prefixStr, lastLog.timestamp).run().catch(()=>{});
+                      await env.DB.prepare("UPDATE visitor_logs SET ua = ?, timestamp = ? WHERE ip = ? AND prefix = ? AND timestamp = ?").bind(finalUa, timestamp, userIP, prefixStr, lastLog.timestamp).run().catch(()=>{});
                   }
               }
               
               if (!isLogDup) {
-                  await env.DB.prepare("INSERT INTO visitor_logs (timestamp, prefix, ip, country, ua) VALUES (?, ?, ?, ?, ?)").bind(timestamp, prefixStr, ip, country, ua).run().catch(()=>{});
+                  await env.DB.prepare("INSERT INTO visitor_logs (timestamp, prefix, ip, country, ua) VALUES (?, ?, ?, ?, ?)").bind(timestamp, prefixStr, userIP, country, finalUa).run().catch(()=>{});
                   const nameCheck = await env.DB.prepare("SELECT server_name FROM emby_server_names WHERE host = ?").bind(proxyTarget).first().catch(()=>null);
                   if (!nameCheck || nameCheck.server_name === proxyTarget) {
                       const sName = await fetchEmbyServerName(proxyTarget);
@@ -2125,8 +2176,7 @@ export default {
     const contentType = response.headers.get("Content-Type") || "";
     const isMedia = response.status === 206 || contentType.match(/video|audio|mpegURL/i);
 
-    // 【核心修复防断流】：文件大小小于 500KB (524288 Bytes) 的一律抛弃，绝不写入数据库！
-    // 彻底解决 CF Worker CPU 耗尽造成的 0kb 断流。
+    // 【防断流】过滤小于 500KB 的碎小请求，绝不占用 CPU
     if (cl > 524288 && isMedia && env.DB) {
         ctx.waitUntil((async () => {
             try {
@@ -2140,42 +2190,41 @@ export default {
                         try { proxyTarget = new URL(match[1]).host; } catch(e) {}
                     }
                 }
-                if (proxyTarget === currentHost) return; // 本地直连不计入通用反代流量
+                if (proxyTarget === currentHost) return; 
 
-                // 【核心修复屏蔽白名单】：只统计你在面板里收集的正常 Emby 域名！
-                // 屏蔽诸如 speedtest-babybus.apple-cdn.net、115网盘 等外部直链。
+                if (isJunkDomain(proxyTarget)) return; // 【过滤脏数据】彻底屏蔽 CDN、直链网盘！
+
                 const validCheck = await env.DB.prepare("SELECT prefix FROM visitor_logs WHERE prefix = ? LIMIT 1").bind('通用: ' + proxyTarget).first();
                 if (!validCheck) return;
 
                 const now = Date.now();
                 const row = await env.DB.prepare("SELECT total_bytes, last_timestamp, avg_speed FROM universal_traffic WHERE host = ?").bind(proxyTarget).first();
                 
-                let newTotal = cl;
+                // 【防膨胀】单次分片最多计入 25MB，防止突发暴涨
+                let addedBytes = cl > 26214400 ? 26214400 : cl;
+                let newTotal = addedBytes;
                 let newSpeed = 0;
 
                 if (row) {
-                    newTotal = row.total_bytes + cl;
+                    newTotal = row.total_bytes + addedBytes;
                     const diffSec = (now - row.last_timestamp) / 1000;
                     
-                    // 【核心均速修复】：只计算间隔在 1秒 到 30秒 之间的平稳分片拉取
-                    // 彻底屏蔽并发（<1秒，导致 138MB/s）和 挂机重连（>30秒，导致 1KB/s）！
-                    if (diffSec >= 1 && diffSec <= 30) { 
-                        const currentSpeed = Math.floor(cl / diffSec);
-                        // 强制过滤超过 50MB/s 的离谱突刺记录
-                        if (currentSpeed < 50 * 1024 * 1024) { 
-                            newSpeed = row.avg_speed > 0 ? Math.floor(row.avg_speed * 0.8 + currentSpeed * 0.2) : currentSpeed;
+                    // 【修测速】只有在两次真实播放请求间隔 1~40秒 之间的稳定期，才进行有效均速测算
+                    if (diffSec >= 1 && diffSec <= 40) { 
+                        const currentSpeed = Math.floor(addedBytes / diffSec);
+                        if (currentSpeed > 10240 && currentSpeed < 50 * 1024 * 1024) { 
+                            newSpeed = row.avg_speed > 0 ? Math.floor(row.avg_speed * 0.7 + currentSpeed * 0.3) : currentSpeed;
                         } else {
                             newSpeed = row.avg_speed;
                         }
                     } else {
-                        // 异常时间差，直接沿用老速度
                         newSpeed = row.avg_speed;
                     }
                     await env.DB.prepare("UPDATE universal_traffic SET total_bytes = ?, last_timestamp = ?, avg_speed = ? WHERE host = ?")
                         .bind(newTotal, now, newSpeed, proxyTarget).run();
                 } else {
                     await env.DB.prepare("INSERT INTO universal_traffic (host, total_bytes, last_timestamp, avg_speed) VALUES (?, ?, ?, ?)")
-                        .bind(proxyTarget, cl, now, 0).run();
+                        .bind(proxyTarget, addedBytes, now, 0).run();
                 }
             } catch(e) {}
         })());
@@ -2186,11 +2235,15 @@ export default {
 
     if (isMainPage && isHTML && response.status === 200) {
       
-      // 【隐形大清洗】：你刷新一次面板网页，我在后台悄悄把之前错误记录进去的 speedtest, 115网盘 全部删掉！
+      // 【隐形大清洗】当你打开面板后台，我在数据库自动执行清洗，干掉所有 speedtest, 115网盘 等脏数据
       if (env.DB) {
           ctx.waitUntil(env.DB.prepare(`
               DELETE FROM universal_traffic 
               WHERE host NOT IN (SELECT REPLACE(prefix, '通用: ', '') FROM visitor_logs WHERE prefix LIKE '%通用%')
+          `).run().catch(()=>{}));
+          ctx.waitUntil(env.DB.prepare(`
+              DELETE FROM visitor_logs 
+              WHERE prefix LIKE '%115%' OR prefix LIKE '%speedtest%' OR prefix LIKE '%cdn%' OR prefix LIKE '%apple%' OR prefix LIKE '%aliyundrive%'
           `).run().catch(()=>{}));
       }
 
